@@ -1,20 +1,15 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+
+import { IntroScreen } from './src/screens/IntroScreen';
+import { ScannerScreen } from './src/screens/ScannerScreen';
+import type { AppMode } from './src/types/app';
 
 export default function App() {
-  return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
-  );
-}
+  const [mode, setMode] = useState<AppMode>('intro');
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+  if (mode === 'scanner') {
+    return <ScannerScreen onBack={() => setMode('intro')} />;
+  }
+
+  return <IntroScreen onStart={() => setMode('scanner')} />;
+}
