@@ -389,26 +389,26 @@
                 <div class="progress-text">TIẾN TRÌNH: <span id="progress">0</span>% | HOÀN THÀNH: <span id="files">0</span> FILES</div>
             </div>
 
-            <!-- Desks based on the image -->
+            <!-- Desks based on the workflow -->
             <div class="desk" style="top: 100px; left: 50px;">
-                <div class="desk-label">Phase A</div>
+                <div class="desk-label">Mobile: Camera</div>
                 <div class="computer"><div class="screen"></div></div>
                 <div class="chair"></div>
             </div>
 
             <div class="desk" style="top: 280px; left: 50px;">
-                <div class="desk-label">Phase 1 Check Arc</div>
+                <div class="desk-label">Server: YOLO Detect</div>
                 <div class="computer"><div class="screen"></div></div>
                 <div class="chair"></div>
             </div>
 
             <div class="desk" style="top: 400px; left: 100px;">
-                <div class="desk-label red">Trạm Cứu Hộ</div>
+                <div class="desk-label red">Tracking & Filter</div>
                 <div class="computer" style="width: 50px; height: 35px;"><div class="screen" style="background: white; width: 40px; margin: 4px;"></div></div>
             </div>
 
             <div class="desk" style="top: 220px; left: 300px;">
-                <div class="desk-label blue">Giám đốc Chrome</div>
+                <div class="desk-label blue">ViT 3D Engine</div>
                 <div class="computer"><div class="screen" style="background: #1e90ff;"></div></div>
                 <div class="chair"></div>
             </div>
@@ -439,7 +439,7 @@
                     <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
                 </div>
                 <div class="body"></div> <!-- Áo xanh -->
-                <div class="name-tag blue">Dev</div>
+                <div class="name-tag blue">Mobile App</div>
             </div>
 
             <div class="character floating" id="char2" style="top: 330px; left: 480px;">
@@ -449,7 +449,7 @@
                     <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
                 </div>
                 <div class="body red"></div> <!-- Áo đỏ -->
-                <div class="name-tag">Thợ Máy</div>
+                <div class="name-tag">Backend Server</div>
             </div>
         </div>
     </div>
@@ -466,68 +466,76 @@
     const bubble1 = document.getElementById('bubble1');
     const bubble2 = document.getElementById('bubble2');
 
+    const states = ['READY', 'DETECTING', 'OBJECT_SELECTED', 'SCANNING', 'UPLOADING', 'PROCESSING', 'DONE'];
+    let currentStateIdx = 0;
+
     const positions = [
-        { top: '300px', left: '400px' }, // Gần sếp
-        { top: '120px', left: '180px' }, // Phase A
-        { top: '300px', left: '180px' }, // Phase 1
-        { top: '420px', left: '260px' }, // Gần trạm cứu hộ
-        { top: '240px', left: '440px' }  // Đứng chơi
+        { top: '300px', left: '400px' }, // ViT
+        { top: '120px', left: '180px' }, // Mobile Camera
+        { top: '300px', left: '180px' }, // YOLO
+        { top: '420px', left: '260px' }, // Tracking
+        { top: '240px', left: '440px' }  // Server Rack
     ];
 
-    const messages = ['Đang check code...', 'Fix bug!!', 'Nghỉ', 'Lấy file...', 'Deploy server'];
+    const mobileMessages = ['Mở Camera...', 'Chụp frame (1.5s)', 'Lấy Bounding Box', 'Quay Video 360...', 'Upload Video!'];
+    const serverMessages = ['Chạy YOLOv8', 'Tracking vật thể', 'Trích xuất Patch', 'Chạy MHSA', 'Dựng 3D Model', 'Trả về .glb'];
 
     function updateSimulation() {
-        // Cập nhật thanh tiến trình giả lập
+        // Cập nhật trạng thái workflow
         if(progress < 100) {
-            if(Math.random() > 0.4) {
-                progress += Math.floor(Math.random() * 8);
-                if(progress > 100) progress = 100;
-                files += Math.floor(Math.random() * 5);
-                
-                progressEl.innerText = progress;
-                filesEl.innerText = files;
-                
-                if(progress > 0 && progress < 100) {
-                    statusTextEl.innerText = "* HỆ THỐNG ĐANG XỬ LÝ...";
-                    statusTextEl.style.color = "#7bed9f";
-                }
-                if(progress === 100) {
-                    statusTextEl.innerText = "* HOÀN THÀNH NHIỆM VỤ!";
-                    statusTextEl.style.color = "#eccc68";
-                }
+            progress += Math.floor(Math.random() * 8);
+            if(progress > 100) progress = 100;
+            
+            // Map progress to state
+            currentStateIdx = Math.floor((progress / 100) * (states.length - 1));
+            if (progress === 100) currentStateIdx = states.length - 1;
+            
+            let stateName = states[currentStateIdx];
+            
+            progressEl.innerText = progress;
+            filesEl.innerText = Math.floor(progress * 1.5);
+            
+            if(progress > 0 && progress < 100) {
+                statusTextEl.innerText = `* TRẠNG THÁI: [ ${stateName} ]...`;
+                statusTextEl.style.color = "#7bed9f";
+            }
+            if(progress === 100) {
+                statusTextEl.innerText = "* HOÀN THÀNH: [ DONE ] - MODEL SẴN SÀNG!";
+                statusTextEl.style.color = "#eccc68";
             }
         } else {
             // Reset chu trình sau 5 giây
             setTimeout(() => {
                 progress = 0;
                 files = 0;
+                currentStateIdx = 0;
                 progressEl.innerText = progress;
                 filesEl.innerText = files;
-                statusTextEl.innerText = "* NHÂN VIÊN ĐANG CHỜ LỆNH...";
+                statusTextEl.innerText = "* TRẠNG THÁI: [ READY ] - CHỜ LỆNH...";
                 statusTextEl.style.color = "#f1f2f6";
             }, 5000);
         }
 
-        // Di chuyển nhân vật 1 (Dev)
-        if(Math.random() > 0.6) {
-            const pos = positions[Math.floor(Math.random() * positions.length)];
-            char1.style.top = pos.top;
-            char1.style.left = pos.left;
+        // Di chuyển Mobile App
+        if(Math.random() > 0.4 && progress < 60) {
+            char1.style.top = positions[1].top;
+            char1.style.left = positions[1].left;
             
-            bubble1.innerText = messages[Math.floor(Math.random() * messages.length)];
+            bubble1.innerText = mobileMessages[Math.floor(Math.random() * mobileMessages.length)];
             bubble1.style.opacity = 1;
-            setTimeout(() => { bubble1.style.opacity = 0; }, 3500);
+            setTimeout(() => { bubble1.style.opacity = 0; }, 2500);
         }
 
-        // Di chuyển nhân vật 2 (Thợ máy)
-        if(Math.random() > 0.7) {
-            const pos = positions[Math.floor(Math.random() * positions.length)];
+        // Di chuyển Backend Server
+        if(Math.random() > 0.3 && progress > 30) {
+            const serverPos = [positions[0], positions[2], positions[3], positions[4]];
+            const pos = serverPos[Math.floor(Math.random() * serverPos.length)];
             char2.style.top = pos.top;
             char2.style.left = pos.left;
 
-            bubble2.innerText = messages[Math.floor(Math.random() * messages.length)];
+            bubble2.innerText = serverMessages[Math.floor(Math.random() * serverMessages.length)];
             bubble2.style.opacity = 1;
-            setTimeout(() => { bubble2.style.opacity = 0; }, 3500);
+            setTimeout(() => { bubble2.style.opacity = 0; }, 2500);
         }
     }
 

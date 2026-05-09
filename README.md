@@ -1,120 +1,87 @@
-# 3D Object Reconstruction từ Ảnh 2D
+# 🚀 AI 3D Reconstruction System (ReconApp)
 
-Dự án này nghiên cứu và triển khai bài toán **tái tạo mô hình 3D của vật thể từ ảnh 2D** sử dụng các bộ dữ liệu chuẩn như ShapeNet, Pix3D, ScanNet và đánh giá bằng các thước đo hình học chuyên biệt (Chamfer Distance, F-score, IoU).[web:127][web:11]
+Dự án này là một hệ thống hoàn chỉnh (End-to-End) dùng để **tái tạo mô hình 3D của vật thể từ ảnh 2D hoặc video quét 360 độ**. 
+Hệ thống bao gồm một ứng dụng di động (Frontend) để thu thập dữ liệu trực quan và một máy chủ AI (Backend) để phân tích thị giác máy tính và dựng 3D.
 
-## 1. Mục tiêu
+---
 
-- Xây dựng mô hình học sâu nhận đầu vào là ảnh (single-view hoặc multi-view) và sinh ra biểu diễn 3D (point cloud/voxel/mesh).
-- So sánh hiệu năng trên các bộ dữ liệu benchmark: ShapeNet, Pix3D, ScanNet.
-- Đánh giá mô hình bằng Chamfer Distance, F-score theo ngưỡng khoảng cách, và IoU cho voxel occupancy.
+## 🏗️ Kiến trúc Hệ thống
 
-## 2. Bài toán
+Dự án được chia thành hai luồng xử lý chính:
 
-- **Đầu vào**: Ảnh RGB của vật thể (có thể kèm depth hoặc mask), được căn chỉnh từ các dataset.
-- **Đầu ra**:
-  - Point cloud 3D hoặc voxel grid biểu diễn hình dạng vật thể.
-  - Có thể chuyển đổi sang mesh để trực quan hóa.
-- **Yêu cầu**:
-  - Giữ được hình dáng tổng thể, tỉ lệ và chi tiết bề mặt.
-  - Tái tạo đủ bề mặt (không bị thiếu mảng lớn, ít lỗ hổng).
+### 1. 📱 Mobile App (React Native / Expo)
+Đóng vai trò là Client thu thập dữ liệu, hướng dẫn người dùng và hiển thị kết quả.
 
-## 3. Bộ dữ liệu
+- **Công nghệ:** React Native, Expo Go, TypeScript, `@testing-library/react-native`.
+- **Thư mục chính (`/src`):**
+  - `screens/`: Chứa các màn hình chính như `IntroScreen` (giới thiệu luồng làm việc) và `ScannerScreen` (giao diện mở Camera, xin quyền, và hiển thị lớp phủ UI quét vật thể).
+  - `components/`: Các thành phần tái sử dụng như `PrimaryButton`, `ScanFrame`, `PipelineItem`.
+  - `constants/`: Định nghĩa giao diện (`theme.ts`) và quy trình workflow (`workflow.ts`).
+  - `types/`: Chứa định nghĩa TypeScript (`app.ts`) cho toàn bộ app.
+- **Tính năng nổi bật:** Xin quyền Camera tự động, UI thân thiện, hỗ trợ Automation Test (Jest) với cấu trúc DOM ảo (kịch bản test tại `__tests__/App.test.tsx`).
 
-Hiện tại dự án hỗ trợ các dataset dưới đây (có thể bật/tắt ở file config):
+### 2. 🖥️ AI Backend Server (Python / FastAPI)
+Đóng vai trò là "Bộ não" xử lý ảnh, Tracking và tái tạo không gian 3D.
 
-- **ShapeNet**: Kho mô hình CAD 3D synthetic với nhiều hạng mục (ghế, bàn, máy bay, v.v.), dùng cho training và evaluation cơ bản trên dữ liệu sạch.[web:77]
-- **Pix3D**: Ảnh thực + mô hình CAD được gán thẳng hàng pixel-level, dùng để kiểm tra model trên dữ liệu thực.[web:81][web:87]
-- **ScanNet (tùy chọn)**: RGB-D indoor scenes cùng mesh reconstruction, dùng cho thí nghiệm mở rộng ở môi trường thực phức tạp.[web:79][web:73]
+- **Công nghệ:** FastAPI, Uvicorn, PyTorch, Docker.
+- **Thư mục chính (`/server`):**
+  - `main.py`: Khởi tạo các API Endpoints (`/detect-frame`, `/upload-scan-video`, `/scan-status/{job_id}`).
+  - `vit_reconstruction.py`: Pipeline Deep Learning cốt lõi sử dụng **Vision Transformer (ViT)**. Xử lý ảnh (Patch Extraction), chạy qua các khối Multi-Head Self-Attention để trích xuất đặc trưng không gian (3D Features) phục vụ cho Photogrammetry hoặc các hệ thống trích xuất Voxel/Point Cloud.
+  - `Dockerfile` & `.dockerignore`: Cấu hình đóng gói hệ thống backend siêu nhẹ, tối ưu hóa các biến môi trường của Python.
 
-Trong mã nguồn, đường dẫn dữ liệu được cấu hình trong `configs/datasets.yaml`. Tham khảo README của từng dataset để tải về và giải nén đúng cấu trúc thư mục.[web:127]
+---
 
-## 4. Kiến trúc mô hình
+## ⚙️ Workflow Luồng Xử Lý (End-to-End)
 
-- Encoder 2D trích xuất đặc trưng từ ảnh (ResNet/ViT).
-- Decoder 3D ánh xạ latent vector sang point cloud/voxel 3D.
-- Loss function kết hợp giữa:
-  - Chamfer Distance giữa point cloud dự đoán và ground-truth.
-  - Regularization (ví dụ: smoothness, occupancy loss nếu là voxel).
+1. **[ READY ]**: Người dùng mở ứng dụng, vào màn hình `IntroScreen`.
+2. **[ DETECTING ]**: Chuyển sang `ScannerScreen`, Camera bật. Điện thoại bắt đầu gửi các frame ảnh lên Server qua API `/detect-frame`. Server dùng YOLO để trả về Bounding Box khoanh vùng vật thể.
+3. **[ OBJECT_SELECTED ]**: Người dùng chạm vào Bounding Box để xác nhận vật thể muốn quét 3D.
+4. **[ SCANNING ]**: Người dùng quay video 360 độ xung quanh vật thể. Ứng dụng khóa nét và hỗ trợ tracking để người dùng quay đều mọi góc độ.
+5. **[ UPLOADING ]**: Ứng dụng gửi video quay được lên Server.
+6. **[ PROCESSING ]**: Server trích xuất frame, tách nền, và chạy qua mạng nơ-ron **ViT 3D Engine** (`vit_reconstruction.py`) để dựng hình.
+7. **[ DONE ]**: Trả về đường dẫn chứa file 3D (`.glb` / `.obj`) cho ứng dụng di động hiển thị.
 
-(Phần này bạn chỉnh lại đúng với kiến trúc cụ thể: PointNet-based decoder, implicit field, NeRF, v.v.)
+> 🎮 **Mô phỏng trực quan:** Bạn có thể mở file `pixel_simulation.html` ở thư mục gốc bằng trình duyệt web để xem hình ảnh mô phỏng UI phong cách Pixel Art chạy đúng theo Workflow 7 bước phía trên!
 
-## 5. Thước đo đánh giá
+---
 
-Vì đầu ra là hình dạng 3D liên tục, dự án **không sử dụng Accuracy phân loại đơn giản**, mà dùng các metric sau:
+## 🛠️ Hướng dẫn cài đặt và chạy dự án
 
-- **Chamfer Distance (CD)**
-  - Đo khoảng cách trung bình hai chiều giữa point cloud dự đoán và ground-truth.
-  - Giá trị càng nhỏ nghĩa là hình dạng dự đoán càng gần với vật thể thật.[web:21][web:11]
-
-- **F-score ở ngưỡng d**
-  - Xem một điểm là “đúng” nếu khoảng cách đến bề mặt đối phương < d.
-  - Tính Precision, Recall và F-score để phản ánh **độ chính xác** và **độ bao phủ** của reconstruction.[web:128][web:116]
-
-- **IoU (Intersection over Union)**
-  - Áp dụng khi biểu diễn dạng voxel hoặc occupancy.
-  - Đo mức độ trùng khớp thể tích giữa reconstruction và ground-truth.[web:22][web:117]
-
-**Lý do không dùng “Accuracy” đơn giản**:
-
-- Bài toán không phải “đoán nhãn” mà là khớp hình dạng liên tục trong không gian 3D.
-- Một con số Accuracy không thể hiện được vật thể có bị méo, bị thiếu vùng, hay bề mặt xấu.
-- CD, F-score và IoU được dùng rộng rãi trong các nghiên cứu 3D reconstruction hiện đại để đánh giá cả **độ chính xác hình học** lẫn **độ hoàn chỉnh bề mặt**.[web:22][web:11][web:128]
-
-## 6. Cài đặt
-
+### 1. Khởi động Mobile App
 ```bash
-# 1. Tạo môi trường
-conda create -n 3drecon python=3.10
-conda activate 3drecon
+# Cài đặt thư viện
+npm install
 
-# 2. Cài đặt dependencies
+# Chạy ứng dụng bằng Expo
+npm start
+```
+
+### 2. Khởi động Backend Server
+```bash
+cd server
+
+# Cài đặt thư viện Python
 pip install -r requirements.txt
 
-# 3. Thiết lập đường dẫn dữ liệu trong configs/datasets.yaml
+# Chạy FastAPI Server
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-
-## 7. Huấn luyện
-
-Ví dụ huấn luyện trên ShapeNet:
-
+*(Hoặc dùng Docker)*
 ```bash
-python train.py \
-  --config configs/shapenet_pointcloud.yaml \
-  --exp_name shapenet_cd_fscore
+cd server
+docker build -t 3drecon-server .
+docker run -p 8000:8000 3drecon-server
 ```
 
-- Logs và checkpoints sẽ được lưu trong `runs/shapenet_cd_fscore/`.
-- TensorBoard có thể được bật qua:
-
+### 3. Chạy Unit Test (DOM Simulation)
+Dự án đã được tích hợp Jest để test giao diện tự động. Quá trình test không cần bật máy ảo.
 ```bash
-tensorboard --logdir runs
+npm test
 ```
 
-## 8. Đánh giá
+---
 
-Sau khi huấn luyện, chạy:
-
-```bash
-python eval.py \
-  --config configs/shapenet_pointcloud.yaml \
-  --checkpoint runs/shapenet_cd_fscore/best.ckpt
-```
-
-Script sẽ xuất các metric: Chamfer Distance, F-score (với các ngưỡng khoảng cách), và IoU (nếu dùng voxel). File kết quả được lưu dưới dạng CSV trong `results/`.[web:117]
-
-## 9. Visualize kết quả
-
-```bash
-python visualize.py \
-  --config configs/shapenet_pointcloud.yaml \
-  --checkpoint runs/shapenet_cd_fscore/best.ckpt
-```
-
-- Hiển thị side-by-side: ảnh input, point cloud/mesh ground-truth, và reconstruction.
-- Có thể lưu ra `.ply` hoặc `.obj` để mở trong MeshLab/Blender.
-
-## 10. Tài liệu tham khảo
-
-- ShapeNet: _An Information-Rich 3D Model Repository_.[web:77]
-- Pix3D: _Dataset and Methods for Single-Image 3D Shape Modeling_.[web:81]
-- Tổng hợp metric đánh giá 3D reconstruction và mapping.[web:22][web:109][web:110]
+## 📈 Lộ trình phát triển tiếp theo (Phase 2)
+- Thay thế API Polling bằng WebSockets cho API `/detect-frame` để giảm thiểu hoàn toàn độ trễ (latency).
+- Tích hợp thư viện hiển thị vật thể 3D (ví dụ: `react-native-webview` kết hợp Three.js, hoặc Expo GL) để render model `.glb` trực tiếp trên app.
+- Nâng cấp cơ chế Upload Video thành Chunked Upload để tránh lỗi mạng khi upload video dung lượng lớn.
