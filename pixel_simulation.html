@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel Office Simulation</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+        body {
+            margin: 0;
+            background-color: #1a1c29;
+            color: white;
+            font-family: 'VT323', monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .game-container {
+            width: 900px;
+            height: 550px;
+            background-color: #2a2d3e;
+            border-radius: 16px;
+            border: 4px solid #4a4d6e;
+            position: relative;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            display: flex;
+        }
+
+        .sidebar {
+            width: 80px;
+            background-color: #1e2030;
+            border-right: 4px solid #141520;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 20px;
+        }
+
+        .sidebar-icon {
+            width: 40px;
+            height: 40px;
+            background-color: #2a2d3e;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 2px solid #3a3d4e;
+        }
+
+        .sidebar-icon.active {
+            border-color: #ff4757;
+            background-color: #3a2025;
+        }
+
+        .main-area {
+            flex: 1;
+            position: relative;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .room {
+            width: 100%;
+            height: 100%;
+            background-color: #f39c12; /* Màu nền cam vàng như ảnh */
+            background-image: 
+                linear-gradient(rgba(0,0,0,0.15) 2px, transparent 2px),
+                linear-gradient(90deg, rgba(0,0,0,0.15) 2px, transparent 2px);
+            background-size: 50px 50px; /* Lưới to hơn */
+            border: 4px solid #d35400;
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Status Box */
+        .status-box {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #1a1b26;
+            border: 4px solid #fff;
+            border-radius: 12px;
+            padding: 15px 40px;
+            text-align: center;
+            z-index: 100;
+            box-shadow: 0 10px 0 rgba(0,0,0,0.4);
+            min-width: 450px;
+        }
+
+        .status-text {
+            font-size: 26px;
+            color: #f1f2f6;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 0 #000;
+            letter-spacing: 1px;
+        }
+
+        .progress-text {
+            font-size: 22px;
+            color: #eccc68;
+            text-shadow: 2px 2px 0 #000;
+        }
+
+        /* Desks */
+        .desk {
+            width: 120px;
+            height: 80px;
+            background-color: #d35400;
+            border: 4px solid #a04000;
+            border-radius: 8px;
+            position: absolute;
+            box-shadow: inset -4px -4px 0 rgba(0,0,0,0.2), 0 8px 0 rgba(0,0,0,0.2);
+        }
+
+        .desk-label {
+            position: absolute;
+            top: -15px;
+            left: -10px;
+            background-color: #2f3542;
+            color: #7bed9f;
+            padding: 2px 10px;
+            border-radius: 6px;
+            font-size: 18px;
+            border: 2px solid #1e272e;
+            white-space: nowrap;
+            box-shadow: 2px 2px 0 #000;
+        }
+
+        .desk-label.blue {
+            background-color: #1e3799;
+            color: #70a1ff;
+        }
+
+        .desk-label.red {
+            background-color: #c0392b;
+            color: #ff7f50;
+        }
+
+        .computer {
+            width: 35px;
+            height: 30px;
+            background-color: #2f3542;
+            border: 3px solid #1e272e;
+            position: absolute;
+            top: -15px;
+            left: 40px;
+            border-radius: 4px;
+        }
+
+        .screen {
+            width: 25px;
+            height: 18px;
+            background-color: #7bed9f;
+            margin: 2px;
+            animation: blink 2.5s infinite;
+        }
+
+        .chair {
+            width: 36px;
+            height: 24px;
+            background-color: #111;
+            border: 3px solid #000;
+            position: absolute;
+            bottom: -16px;
+            left: 40px;
+            border-radius: 8px;
+            z-index: 1;
+        }
+
+        /* Servers */
+        .server-area {
+            position: absolute;
+            right: 0;
+            top: 0;
+            width: 180px;
+            height: 100%;
+            background-color: #2c3e50;
+            border-left: 4px solid #1a252f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            z-index: 5;
+        }
+
+        .server-rack {
+            width: 110px;
+            height: 180px;
+            background-color: #1e272e;
+            border: 4px solid #000;
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            gap: 12px;
+            box-shadow: inset 4px 4px 0 rgba(255,255,255,0.05);
+        }
+
+        .server-blade {
+            width: 100%;
+            height: 20px;
+            background-color: #34495e;
+            border: 2px solid #000;
+            position: relative;
+        }
+
+        .light {
+            width: 6px;
+            height: 12px;
+            position: absolute;
+            top: 2px;
+            border-radius: 2px;
+            animation: blinkLight 1s infinite alternate;
+        }
+
+        .light.blue { background-color: #1e90ff; left: 10px; animation-duration: 0.5s; }
+        .light.yellow { background-color: #eccc68; left: 20px; animation-duration: 0.8s; }
+
+        /* Characters */
+        .character {
+            position: absolute;
+            width: 40px;
+            height: 60px;
+            z-index: 10;
+            transition: all 1s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hat {
+            width: 30px;
+            height: 16px;
+            background-color: #c0392b;
+            border: 3px solid #000;
+            border-radius: 12px 12px 0 0;
+            margin-bottom: -4px;
+            z-index: 3;
+            position: relative;
+        }
+
+        .hat-brim {
+            width: 16px;
+            height: 6px;
+            background-color: #c0392b;
+            border: 3px solid #000;
+            border-radius: 0 10px 10px 0;
+            position: absolute;
+            right: -12px;
+            bottom: -3px;
+        }
+
+        .head {
+            width: 32px;
+            height: 32px;
+            background-color: #ffeaa7;
+            border: 3px solid #000;
+            border-radius: 50%;
+            z-index: 2;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            box-shadow: inset -2px -2px 0 rgba(0,0,0,0.1);
+        }
+
+        .eyes {
+            display: flex;
+            gap: 6px;
+        }
+
+        .eye {
+            width: 4px;
+            height: 8px;
+            background-color: #000;
+            border-radius: 2px;
+        }
+
+        .body {
+            width: 36px;
+            height: 28px;
+            background-color: #0984e3;
+            border: 3px solid #000;
+            border-radius: 8px 8px 0 0;
+            margin-top: -6px;
+            z-index: 1;
+        }
+
+        .body.red { background-color: #d63031; }
+
+        .name-tag {
+            background-color: #c0392b;
+            color: white;
+            font-size: 16px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 2px solid #000;
+            position: absolute;
+            bottom: -25px;
+            white-space: nowrap;
+            box-shadow: 2px 2px 0 #000;
+            z-index: 4;
+        }
+
+        .name-tag.blue { background-color: #0984e3; }
+
+        .speech-bubble {
+            position: absolute;
+            top: -45px;
+            background-color: white;
+            color: black;
+            border: 3px solid #000;
+            border-radius: 12px;
+            padding: 6px 14px;
+            font-size: 18px;
+            white-space: nowrap;
+            font-weight: bold;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 20;
+            box-shadow: 2px 2px 0 #000;
+        }
+
+        .speech-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 8px 8px 0;
+            border-style: solid;
+            border-color: #000 transparent transparent transparent;
+        }
+        
+        .speech-bubble::before {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px 6px 0;
+            border-style: solid;
+            border-color: #fff transparent transparent transparent;
+            z-index: 1;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
+        }
+
+        @keyframes blinkLight {
+            0% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+
+        .floating {
+            animation: float 2s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="game-container">
+    <div class="sidebar">
+        <div class="sidebar-icon"></div>
+        <div class="sidebar-icon"></div>
+        <div class="sidebar-icon active"></div>
+        <div class="sidebar-icon"></div>
+    </div>
+    
+    <div class="main-area">
+        <div class="room">
+            <!-- Status Box -->
+            <div class="status-box">
+                <div class="status-text" id="statusText">* NHÂN VIÊN ĐANG CHỜ LỆNH...</div>
+                <div class="progress-text">TIẾN TRÌNH: <span id="progress">0</span>% | HOÀN THÀNH: <span id="files">0</span> FILES</div>
+            </div>
+
+            <!-- Desks based on the image -->
+            <div class="desk" style="top: 100px; left: 50px;">
+                <div class="desk-label">Phase A</div>
+                <div class="computer"><div class="screen"></div></div>
+                <div class="chair"></div>
+            </div>
+
+            <div class="desk" style="top: 280px; left: 50px;">
+                <div class="desk-label">Phase 1 Check Arc</div>
+                <div class="computer"><div class="screen"></div></div>
+                <div class="chair"></div>
+            </div>
+
+            <div class="desk" style="top: 400px; left: 100px;">
+                <div class="desk-label red">Trạm Cứu Hộ</div>
+                <div class="computer" style="width: 50px; height: 35px;"><div class="screen" style="background: white; width: 40px; margin: 4px;"></div></div>
+            </div>
+
+            <div class="desk" style="top: 220px; left: 300px;">
+                <div class="desk-label blue">Giám đốc Chrome</div>
+                <div class="computer"><div class="screen" style="background: #1e90ff;"></div></div>
+                <div class="chair"></div>
+            </div>
+
+            <!-- Servers -->
+            <div class="server-area">
+                <div class="server-rack">
+                    <div class="server-blade"><div class="light blue"></div><div class="light yellow"></div></div>
+                    <div class="server-blade"><div class="light blue"></div></div>
+                    <div class="server-blade"><div class="light blue"></div><div class="light yellow"></div></div>
+                    <div class="server-blade"></div>
+                    <div class="server-blade"><div class="light blue"></div></div>
+                </div>
+                <div class="server-rack">
+                    <div class="server-blade"><div class="light blue"></div></div>
+                    <div class="server-blade"><div class="light blue"></div><div class="light yellow"></div></div>
+                    <div class="server-blade"></div>
+                    <div class="server-blade"><div class="light blue"></div><div class="light yellow"></div></div>
+                    <div class="server-blade"><div class="light blue"></div></div>
+                </div>
+            </div>
+
+            <!-- Characters -->
+            <div class="character floating" id="char1" style="top: 290px; left: 400px;">
+                <div class="speech-bubble" id="bubble1" style="opacity: 1;">Nghỉ</div>
+                <div class="hat" style="background: transparent; border: none;"></div> <!-- Không mũ -->
+                <div class="head">
+                    <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+                </div>
+                <div class="body"></div> <!-- Áo xanh -->
+                <div class="name-tag blue">Dev</div>
+            </div>
+
+            <div class="character floating" id="char2" style="top: 330px; left: 480px;">
+                <div class="speech-bubble" id="bubble2">Sẵn sàng</div>
+                <div class="hat"><div class="hat-brim"></div></div> <!-- Mũ đỏ -->
+                <div class="head">
+                    <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+                </div>
+                <div class="body red"></div> <!-- Áo đỏ -->
+                <div class="name-tag">Thợ Máy</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let progress = 0;
+    let files = 0;
+    const progressEl = document.getElementById('progress');
+    const filesEl = document.getElementById('files');
+    const statusTextEl = document.getElementById('statusText');
+    const char1 = document.getElementById('char1');
+    const char2 = document.getElementById('char2');
+    const bubble1 = document.getElementById('bubble1');
+    const bubble2 = document.getElementById('bubble2');
+
+    const positions = [
+        { top: '300px', left: '400px' }, // Gần sếp
+        { top: '120px', left: '180px' }, // Phase A
+        { top: '300px', left: '180px' }, // Phase 1
+        { top: '420px', left: '260px' }, // Gần trạm cứu hộ
+        { top: '240px', left: '440px' }  // Đứng chơi
+    ];
+
+    const messages = ['Đang check code...', 'Fix bug!!', 'Nghỉ', 'Lấy file...', 'Deploy server'];
+
+    function updateSimulation() {
+        // Cập nhật thanh tiến trình giả lập
+        if(progress < 100) {
+            if(Math.random() > 0.4) {
+                progress += Math.floor(Math.random() * 8);
+                if(progress > 100) progress = 100;
+                files += Math.floor(Math.random() * 5);
+                
+                progressEl.innerText = progress;
+                filesEl.innerText = files;
+                
+                if(progress > 0 && progress < 100) {
+                    statusTextEl.innerText = "* HỆ THỐNG ĐANG XỬ LÝ...";
+                    statusTextEl.style.color = "#7bed9f";
+                }
+                if(progress === 100) {
+                    statusTextEl.innerText = "* HOÀN THÀNH NHIỆM VỤ!";
+                    statusTextEl.style.color = "#eccc68";
+                }
+            }
+        } else {
+            // Reset chu trình sau 5 giây
+            setTimeout(() => {
+                progress = 0;
+                files = 0;
+                progressEl.innerText = progress;
+                filesEl.innerText = files;
+                statusTextEl.innerText = "* NHÂN VIÊN ĐANG CHỜ LỆNH...";
+                statusTextEl.style.color = "#f1f2f6";
+            }, 5000);
+        }
+
+        // Di chuyển nhân vật 1 (Dev)
+        if(Math.random() > 0.6) {
+            const pos = positions[Math.floor(Math.random() * positions.length)];
+            char1.style.top = pos.top;
+            char1.style.left = pos.left;
+            
+            bubble1.innerText = messages[Math.floor(Math.random() * messages.length)];
+            bubble1.style.opacity = 1;
+            setTimeout(() => { bubble1.style.opacity = 0; }, 3500);
+        }
+
+        // Di chuyển nhân vật 2 (Thợ máy)
+        if(Math.random() > 0.7) {
+            const pos = positions[Math.floor(Math.random() * positions.length)];
+            char2.style.top = pos.top;
+            char2.style.left = pos.left;
+
+            bubble2.innerText = messages[Math.floor(Math.random() * messages.length)];
+            bubble2.style.opacity = 1;
+            setTimeout(() => { bubble2.style.opacity = 0; }, 3500);
+        }
+    }
+
+    setInterval(updateSimulation, 2500);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  # Dịch vụ giả lập AWS
+  floci:
+    image: floci/floci:latest
+    container_name: floci_aws
+    ports:
+      - "4566:4566"
+    environment:
+      - FLOCI_DEFAULT_REGION=ap-southeast-1
+      - FLOCI_STORAGE_MODE=persistent # Giữ lại Video và Queue khi tắt Docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./floci_storage:/app/data
+    user: root
+    networks:
+      - 3d_reconstruction_net
+
+  # Dịch vụ Backend xử lý AI
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: fastapi_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - AWS_ENDPOINT_URL=http://floci:4566 # Điểm mấu chốt: Dùng tên service 'floci' thay vì 'localhost'
+      - AWS_DEFAULT_REGION=ap-southeast-1
+      - AWS_ACCESS_KEY_ID=mock_key
+      - AWS_SECRET_ACCESS_KEY=mock_secret
+    volumes:
+      - ./server:/app # Gắn volume để code tự cập nhật khi sửa (Hot Reload)
+    depends_on:
+      - floci
+    networks:
+      - 3d_reconstruction_net
+
+networks:
+  3d_reconstruction_net:
+    driver: bridge
