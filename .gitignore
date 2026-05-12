@@ -4,7 +4,10 @@
 node_modules/
 
 venv/
+__pycache__/
+*.pyc
 data/raw/
+project/data/raw/
 .cache/
 
 # Expo
@@ -39,6 +42,7 @@ yarn-error.*
 .venv/
 server/uploads/
 server/models/
+project/results/training/
 
 # typescript
 *.tsbuildinfo
