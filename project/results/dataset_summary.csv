@@ -1,0 +1,9 @@
+﻿Thuộc tính,Giá trị
+Tên bộ dữ liệu,Pix3D
+Loại bài toán,3D Reconstruction
+Dữ liệu đầu vào,Ảnh RGB + mask
+Dữ liệu đầu ra,Point cloud từ model 3D
+Số mẫu ban đầu,10069
+Số mẫu sau làm sạch,10069
+Số category,9
+Metric,"Chamfer Distance, F-score"
