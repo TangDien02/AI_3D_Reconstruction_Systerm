@@ -43,6 +43,8 @@ yarn-error.*
 server/uploads/
 server/models/
 project/results/training/
+project/results/inference/
+project/results/week2_eda/
 
 # typescript
 *.tsbuildinfo

@@ -81,7 +81,7 @@ def parse_args():
     parser.add_argument("--dataset-mode", choices=["raw", "processed"], default="processed")
     parser.add_argument("--split", default="train")
     parser.add_argument("--categories", nargs="+", default=["chair"])
-    parser.add_argument("--max-samples", type=int, default=64)
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--num-points", type=int, default=512)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--patch-size", type=int, default=16)
@@ -92,7 +92,43 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--best-metric",
+        choices=["val_chamfer_distance", "val_f_score"],
+        default="val_chamfer_distance",
+        help="Validation metric used to save checkpoints/best_model.pt.",
+    )
     return parser.parse_args()
+
+
+def build_checkpoint(model, args, epoch, train_loss=None, val_metrics=None, best_metric=None, best_score=None):
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "categories": args.categories,
+        "num_points": args.num_points,
+        "image_size": args.image_size,
+        "patch_size": args.patch_size,
+        "embed_dim": args.embed_dim,
+        "transformer_depth": args.transformer_depth,
+        "num_heads": args.num_heads,
+        "epoch": epoch,
+        "best_metric": best_metric,
+        "best_score": best_score,
+    }
+    if train_loss is not None:
+        checkpoint["train_loss"] = train_loss
+    if val_metrics is not None:
+        checkpoint["val_chamfer_distance"] = val_metrics["chamfer_distance"]
+        checkpoint["val_f_score"] = val_metrics["f_score"]
+    return checkpoint
+
+
+def is_better_score(metric_name, score, best_score):
+    if best_score is None:
+        return True
+    if metric_name == "val_chamfer_distance":
+        return score < best_score
+    return score > best_score
 
 
 def main():
@@ -151,6 +187,9 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     metrics_path = metric_dir / "training_metrics.csv"
+    best_checkpoint_path = checkpoint_dir / "best_model.pt"
+    best_score = None
+    best_epoch = None
     with metrics_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=["epoch", "train_loss", "val_chamfer_distance", "val_f_score"])
         writer.writeheader()
@@ -166,29 +205,49 @@ def main():
                 "val_f_score": val_metrics["f_score"],
             }
             writer.writerow(row)
+
+            current_score = row[args.best_metric]
+            if is_better_score(args.best_metric, current_score, best_score):
+                best_score = current_score
+                best_epoch = epoch
+                torch.save(
+                    build_checkpoint(
+                        model=model,
+                        args=args,
+                        epoch=epoch,
+                        train_loss=train_loss,
+                        val_metrics=val_metrics,
+                        best_metric=args.best_metric,
+                        best_score=best_score,
+                    ),
+                    best_checkpoint_path,
+                )
+                best_text = f" best_{args.best_metric}={best_score:.6f}"
+            else:
+                best_text = ""
+
             print(
                 f"epoch={epoch} "
                 f"train_loss={train_loss:.6f} "
                 f"val_cd={val_metrics['chamfer_distance']:.6f} "
                 f"val_f={val_metrics['f_score']:.4f}"
+                f"{best_text}"
             )
 
     checkpoint_path = checkpoint_dir / "transformer_pointcloud_net.pt"
     torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "categories": args.categories,
-            "num_points": args.num_points,
-            "image_size": args.image_size,
-            "patch_size": args.patch_size,
-            "embed_dim": args.embed_dim,
-            "transformer_depth": args.transformer_depth,
-            "num_heads": args.num_heads,
-        },
+        build_checkpoint(
+            model=model,
+            args=args,
+            epoch=args.epochs,
+            best_metric=args.best_metric,
+            best_score=best_score,
+        ),
         checkpoint_path,
     )
     print(f"Saved metrics to {metrics_path}")
     print(f"Saved checkpoint to {checkpoint_path}")
+    print(f"Saved best checkpoint to {best_checkpoint_path} (epoch={best_epoch}, {args.best_metric}={best_score:.6f})")
 
 
 if __name__ == "__main__":
