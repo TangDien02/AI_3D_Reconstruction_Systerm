@@ -1,16 +1,17 @@
-from ultralytics import YOLO
 from src.utils.logger import get_logger
 
 logger = get_logger("ImagePreprocessor")
 
 class ImagePreprocessor:
     def __init__(self):
+        self.yolo_model = None
         try:
+            from ultralytics import YOLO
+
             logger.info("Khởi tạo mô hình YOLOv8-seg (Fallback)...")
             self.yolo_model = YOLO('yolov8n-seg.pt')
         except Exception as e:
             logger.warning(f"Không thể khởi tạo YOLO: {e}")
-            self.yolo_model = None
 
     def get_class_from_pre_data(self, image_id, metadata_dict):
         """ Lấy class từ pre-data (như file metadata JSON) """
