@@ -1,7 +1,7 @@
 version: "3.8"
 
 services:
-  # Dịch vụ giả lập AWS
+  # Dịch vụ lưu trữ trung gian (Floci)
   floci:
     image: floci/floci:latest
     container_name: floci_aws

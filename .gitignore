@@ -50,3 +50,17 @@ project/results/training/
 # generated native folders
 /ios
 /android
+
+.vscode/
+
+project/data/processed/images/
+project/data/processed/masks/
+project/data/processed/points/
+
+project/results/baseline/
+project/results/eda/
+project/results/logs/
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

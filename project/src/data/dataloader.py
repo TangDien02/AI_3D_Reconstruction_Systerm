@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-import trimesh
 
 # Ghi chu:
 # File nay la dataloader cho Pix3D. Nhiem vu chinh la bien du lieu tho
@@ -31,6 +31,8 @@ def normalize_points(points: np.ndarray) -> np.ndarray:
 
 
 def load_and_sample_obj(model_path: str, num_points: int = 2048) -> torch.Tensor:
+    import trimesh
+
     mesh = trimesh.load_mesh(model_path, force="mesh", process=False)
     if isinstance(mesh, trimesh.Scene):
         mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
@@ -84,8 +86,8 @@ class Pix3DDataset(Dataset):
         mask_path = self.root_dir / item["mask"]
         model_path = self.root_dir / item["model"]
 
-        image = Image.open(image_path).convert("RGB")
-        mask = Image.open(mask_path).convert("L").resize(image.size)
+        image = self._load_image_safely(image_path, mode="RGB")
+        mask = self._load_image_safely(mask_path, mode="L").resize(image.size)
         image = self._apply_mask(image, mask)
         image = image.resize((self.image_size, self.image_size))
         image_tensor = self._to_tensor(image)
@@ -112,9 +114,82 @@ class Pix3DDataset(Dataset):
         return Image.fromarray(masked)
 
     @staticmethod
+    def _load_image_safely(image_path: str | Path, mode: str) -> Image.Image:
+        image = Image.open(image_path)
+        if image.mode == "P" and "transparency" in image.info:
+            image = image.convert("RGBA")
+        return image.convert(mode)
+
+    @staticmethod
     def _to_tensor(image: Image.Image) -> torch.Tensor:
         arr = np.asarray(image).astype(np.float32) / 255.0
         arr = np.transpose(arr, (2, 0, 1))
         return torch.from_numpy(arr)
+
+
+class ProcessedPix3DDataset(Dataset):
+    def __init__(
+        self,
+        processed_dir,
+        split="train",
+        categories=None,
+        max_samples=None,
+        transform=None,
+        require_files=True,
+    ):
+        self.processed_dir = Path(processed_dir)
+        self.split = split
+        self.categories = set(categories) if categories else None
+        self.transform = transform
+
+        split_path = self.processed_dir / "splits" / f"{split}.csv"
+        if not split_path.is_file():
+            raise FileNotFoundError(f"Split file not found: {split_path}")
+
+        items = pd.read_csv(split_path)
+        if self.categories:
+            items = items[items["category"].isin(self.categories)]
+
+        required_columns = ["processed_image", "pointcloud", "category"]
+        missing_columns = [col for col in required_columns if col not in items.columns]
+        if missing_columns:
+            raise KeyError(f"Split file is missing columns: {missing_columns}")
+
+        if require_files:
+            items = items[
+                items["processed_image"].apply(lambda path: (self.processed_dir / str(path)).is_file())
+                & items["pointcloud"].apply(lambda path: (self.processed_dir / str(path)).is_file())
+            ]
+
+        if max_samples is not None:
+            items = items.head(max_samples)
+
+        self.items = items.reset_index(drop=True)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        item = self.items.iloc[idx]
+        image_path = self.processed_dir / str(item["processed_image"])
+        pointcloud_path = self.processed_dir / str(item["pointcloud"])
+
+        image = Pix3DDataset._load_image_safely(image_path, mode="RGB")
+        image_tensor = Pix3DDataset._to_tensor(image)
+        if self.transform:
+            image_tensor = self.transform(image_tensor)
+
+        points_gt = torch.from_numpy(np.load(pointcloud_path).astype(np.float32))
+
+        sample = {
+            "image": image_tensor,
+            "category": item["category"],
+            "points_gt": points_gt,
+            "pointcloud_path": str(pointcloud_path),
+            "image_path": str(image_path),
+        }
+        if "model" in item:
+            sample["model_path"] = str(item["model"])
+        return sample
 
 

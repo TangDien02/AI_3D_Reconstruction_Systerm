@@ -28,8 +28,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.data.dataloader import Pix3DDataset
-from src.utils.metric import chamfer_distance, f_score
+from src.data.dataloader import Pix3DDataset, ProcessedPix3DDataset
+from src.metrics.losses import chamfer_distance, f_score
 
 
 class TransformerPointCloudNet(nn.Module):
@@ -140,7 +140,10 @@ def evaluate(model, dataloader, device, threshold):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train single-view 3D point cloud baseline")
     parser.add_argument("--raw-dir", default="data/raw")
+    parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument("--output-dir", default="results/training")
+    parser.add_argument("--dataset-mode", choices=["raw", "processed"], default="processed")
+    parser.add_argument("--split", default="train")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--max-samples", type=int, default=64)
     parser.add_argument("--num-points", type=int, default=512)
@@ -159,17 +162,29 @@ def parse_args():
 def main():
     args = parse_args()
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
+    processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
     output_dir = (PROJECT_DIR / args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_dir / "checkpoints"
+    metric_dir = output_dir / "metrics"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    metric_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = Pix3DDataset(
-        root_dir=raw_dir,
-        categories=args.categories,
-        image_size=args.image_size,
-        num_points=args.num_points,
-        max_samples=args.max_samples,
-    )
+    if args.dataset_mode == "processed":
+        dataset = ProcessedPix3DDataset(
+            processed_dir=processed_dir,
+            split=args.split,
+            categories=args.categories,
+            max_samples=args.max_samples,
+        )
+    else:
+        dataset = Pix3DDataset(
+            root_dir=raw_dir,
+            categories=args.categories,
+            image_size=args.image_size,
+            num_points=args.num_points,
+            max_samples=args.max_samples,
+        )
 
     if len(dataset) < 2:
         raise RuntimeError("Dataset needs at least 2 samples for train/validation split.")
@@ -199,7 +214,7 @@ def main():
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    metrics_path = output_dir / "training_metrics.csv"
+    metrics_path = metric_dir / "training_metrics.csv"
     with metrics_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=["epoch", "train_loss", "val_chamfer_distance", "val_f_score"])
         writer.writeheader()
@@ -222,7 +237,7 @@ def main():
                 f"val_f={val_metrics['f_score']:.4f}"
             )
 
-    checkpoint_path = output_dir / "transformer_pointcloud_net.pt"
+    checkpoint_path = checkpoint_dir / "transformer_pointcloud_net.pt"
     torch.save(
         {
             "model_state_dict": model.state_dict(),
