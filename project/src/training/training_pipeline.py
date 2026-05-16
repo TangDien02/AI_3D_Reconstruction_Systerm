@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import logging
 import sys
 from pathlib import Path
 
@@ -30,6 +32,80 @@ if str(PROJECT_DIR) not in sys.path:
 from src.data.dataloader import Pix3DDataset, ProcessedPix3DDataset
 from src.metrics.losses import chamfer_distance, f_score
 from src.models.transformer_pointcloud import TransformerPointCloudNet
+
+
+def setup_baseline_logger(log_dir: Path) -> logging.Logger:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("BaselineTraining")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    log_path = log_dir / "baseline.log"
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+
+    if not any(
+        isinstance(handler, logging.FileHandler)
+        and Path(handler.baseFilename) == log_path
+        for handler in logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    if not any(type(handler) is logging.StreamHandler for handler in logger.handlers):
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+
+    return logger
+
+
+def save_training_curves(metrics_path: Path, output_path: Path) -> Path | None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    rows = []
+    with metrics_path.open("r", newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            rows.append(
+                {
+                    "epoch": int(row["epoch"]),
+                    "train_loss": float(row["train_loss"]),
+                    "val_chamfer_distance": float(row["val_chamfer_distance"]),
+                    "val_f_score": float(row["val_f_score"]),
+                }
+            )
+
+    if not rows:
+        return None
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    epochs = [row["epoch"] for row in rows]
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(epochs, [row["train_loss"] for row in rows], marker="o", label="Train loss")
+    axes[0].plot(
+        epochs,
+        [row["val_chamfer_distance"] for row in rows],
+        marker="o",
+        label="Val Chamfer",
+    )
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss / Chamfer")
+    axes[0].legend()
+
+    axes[1].plot(epochs, [row["val_f_score"] for row in rows], marker="o", color="#2f6f5e")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Val F-score")
+
+    fig.suptitle("Baseline training metrics")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 
 def train_one_epoch(model, dataloader, optimizer, device):
@@ -77,7 +153,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train single-view 3D point cloud baseline")
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--processed-dir", default="data/processed")
-    parser.add_argument("--output-dir", default="results/training")
+    parser.add_argument("--output-dir", default="results/baseline")
     parser.add_argument("--dataset-mode", choices=["raw", "processed"], default="processed")
     parser.add_argument("--split", default="train")
     parser.add_argument("--categories", nargs="+", default=["chair"])
@@ -131,17 +207,22 @@ def is_better_score(metric_name, score, best_score):
     return score > best_score
 
 
-def main():
-    args = parse_args()
+def run_training(args):
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
     output_dir = (PROJECT_DIR / args.output_dir).resolve()
-    checkpoint_dir = output_dir / "checkpoints"
+    checkpoint_dir = output_dir / "outputs" / "checkpoints"
     metric_dir = output_dir / "metrics"
+    log_dir = output_dir / "logs"
+    artifact_dir = output_dir / "outputs"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metric_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    logger = setup_baseline_logger(log_dir)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Starting baseline training on device=%s", device)
+    logger.info("Output directory: %s", output_dir)
     if args.dataset_mode == "processed":
         dataset = ProcessedPix3DDataset(
             processed_dir=processed_dir,
@@ -160,6 +241,13 @@ def main():
 
     if len(dataset) < 2:
         raise RuntimeError("Dataset needs at least 2 samples for train/validation split.")
+    logger.info(
+        "Dataset ready: mode=%s split=%s categories=%s samples=%s",
+        args.dataset_mode,
+        args.split,
+        ",".join(args.categories),
+        len(dataset),
+    )
 
     train_size = max(1, int(len(dataset) * 0.8))
     val_size = len(dataset) - train_size
@@ -175,6 +263,7 @@ def main():
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    logger.info("Train samples: %s | Val samples: %s", train_size, val_size)
 
     model = TransformerPointCloudNet(
         num_points=args.num_points,
@@ -226,13 +315,15 @@ def main():
             else:
                 best_text = ""
 
-            print(
+            message = (
                 f"epoch={epoch} "
                 f"train_loss={train_loss:.6f} "
                 f"val_cd={val_metrics['chamfer_distance']:.6f} "
                 f"val_f={val_metrics['f_score']:.4f}"
                 f"{best_text}"
             )
+            print(message)
+            logger.info(message)
 
     checkpoint_path = checkpoint_dir / "transformer_pointcloud_net.pt"
     torch.save(
@@ -245,9 +336,58 @@ def main():
         ),
         checkpoint_path,
     )
+    plot_path = save_training_curves(metrics_path, artifact_dir / "training_curves.png")
+    summary_path = artifact_dir / "baseline_summary.json"
+    summary = {
+        "dataset_mode": args.dataset_mode,
+        "split": args.split,
+        "categories": args.categories,
+        "max_samples": args.max_samples,
+        "num_points": args.num_points,
+        "image_size": args.image_size,
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "learning_rate": args.lr,
+        "metrics_path": str(metrics_path),
+        "checkpoint_path": str(checkpoint_path),
+        "best_checkpoint_path": str(best_checkpoint_path),
+        "best_epoch": best_epoch,
+        "best_metric": args.best_metric,
+        "best_score": best_score,
+        "training_curves_path": str(plot_path) if plot_path else None,
+    }
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
     print(f"Saved metrics to {metrics_path}")
     print(f"Saved checkpoint to {checkpoint_path}")
-    print(f"Saved best checkpoint to {best_checkpoint_path} (epoch={best_epoch}, {args.best_metric}={best_score:.6f})")
+    if best_score is not None:
+        print(f"Saved best checkpoint to {best_checkpoint_path} (epoch={best_epoch}, {args.best_metric}={best_score:.6f})")
+    print(f"Saved summary to {summary_path}")
+    logger.info("Saved metrics to %s", metrics_path)
+    logger.info("Saved checkpoint to %s", checkpoint_path)
+    if best_score is not None:
+        logger.info(
+            "Saved best checkpoint to %s (epoch=%s, %s=%.6f)",
+            best_checkpoint_path,
+            best_epoch,
+            args.best_metric,
+            best_score,
+        )
+    logger.info("Saved summary to %s", summary_path)
+    if plot_path:
+        logger.info("Saved training curves to %s", plot_path)
+    return {
+        "metrics_path": metrics_path,
+        "checkpoint_path": checkpoint_path,
+        "best_checkpoint_path": best_checkpoint_path,
+        "summary_path": summary_path,
+        "plot_path": plot_path,
+    }
+
+
+def main():
+    args = parse_args()
+    run_training(args)
 
 
 if __name__ == "__main__":

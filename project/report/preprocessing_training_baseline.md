@@ -129,24 +129,48 @@ Training pipeline nam trong:
 project/src/training/training_pipeline.py
 ```
 
+Danh gia va inference baseline nam trong:
+
+```text
+project/src/evaluation/evaluate_baseline.py
+project/src/inference/baseline_inference.py
+project/src/utils/pointcloud_io.py
+```
+
 Lenh training baseline da chay:
 
 ```bash
 cd project
 set KMP_DUPLICATE_LIB_OK=TRUE
-python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/baseline
 ```
 
 Ghi chu: `KMP_DUPLICATE_LIB_OK=TRUE` duoc dung tam thoi do moi truong Anaconda tren Windows gap xung dot OpenMP. Ve lau dai nen tao virtual environment sach cho PyTorch.
 
 ## 6. Ket qua baseline
 
-Ket qua duoc luu tai:
+Quy trinh baseline da duoc bo sung de ghi day du ket qua vao dung thu muc:
 
 ```text
-project/results/training/metrics/training_metrics.csv
-project/results/training/checkpoints/transformer_pointcloud_net.pt
+project/results/baseline/
+  logs/
+    baseline.log
+  metrics/
+    training_metrics.csv
+  outputs/
+    baseline_summary.json
+    training_curves.png
+    checkpoints/
+      transformer_pointcloud_net.pt
 ```
+
+Y nghia tung phan:
+
+- `logs/baseline.log`: log qua trinh train, cau hinh dataset, so sample train/validation va metric theo epoch.
+- `metrics/training_metrics.csv`: bang metric theo epoch dung de ve bieu do va so sanh cac lan chay.
+- `outputs/checkpoints/transformer_pointcloud_net.pt`: checkpoint model baseline.
+- `outputs/baseline_summary.json`: tom tat cau hinh chay baseline va duong dan artifact.
+- `outputs/training_curves.png`: bieu do train loss, validation Chamfer Distance va validation F-score.
 
 Bang ket qua training voi category `chair`, 256 samples, 5 epochs:
 
@@ -175,12 +199,20 @@ Da hoan thanh:
 - Point cloud `.npy`.
 - Processed dataloader.
 - Transformer point cloud baseline.
-- Training baseline va checkpoint.
+- Training baseline, log, metric, bieu do, summary va checkpoint trong `results/baseline`.
 
 Can cai thien tiep:
 
 - Tao moi truong Python sach de bo workaround `KMP_DUPLICATE_LIB_OK`.
 - Chay baseline tren nhieu category hon, vi hien tai moi train `chair`.
-- Luu them bieu do loss/metric theo epoch.
-- Them script evaluate rieng tren `test.csv`.
-- Ket noi checkpoint voi backend inference neu can demo end-to-end.
+- Chay `evaluate_baseline.py` tren `test.csv` sau khi cai du `torch`.
+- Mo rong backend inference tu anh don sang video/scan 360 neu can demo end-to-end.
+- Chuyen giao dien sang dung endpoint `/reconstruct-image` sau khi backend ky thuat on dinh.
+
+## 8. Lenh ky thuat rut gon
+
+Danh sach lenh cai dat, preprocessing, training, evaluation, inference va backend da duoc gom tai:
+
+```text
+project/TECHNICAL_COMMANDS.md
+```
