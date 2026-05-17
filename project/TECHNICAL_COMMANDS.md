@@ -17,65 +17,161 @@ Neu dung server FastAPI:
 pip install -r ..\server\requirements.txt
 ```
 
-## 2. Chay preprocessing day du
+## 2. Mo giao dien cau hinh training
+
+Dung giao dien nay neu muon chon category, output folder, train tiep tu `best_model.pt`, train lai tu dau, hoac chon checkpoint tuy chon. Giao dien se bao loi neu checkpoint khac category hoac khac kien truc model.
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+.\.venv-gpu\Scripts\python.exe train_config_gui.py
+```
+
+Neu may local bi loi CUDA hoac dung GTX 1050 voi ban PyTorch khong tuong thich, tick `Force CPU`. Khi do lenh train se co them `--device cpu`.
+
+Sau khi train xong, pipeline tu dong tao cac file truc quan va bang sau:
+
+```text
+metrics/training_metrics.csv
+metrics/test_summary.json
+metrics/test_batch_metrics.csv
+outputs/training_curves.png
+outputs/test_summary_metrics.png
+outputs/test_batch_metrics.png
+outputs/comparison/*_comparison.png
+```
+
+Che do checkpoint:
+
+```text
+Auto: dung best_model.pt neu co      tiep tuc train tu best_model.pt trong output dir; neu chua co thi train moi
+Train model moi                      khong resume; can can than vi co the ghi de checkpoint cu trong output dir
+Bat buoc resume best_model.pt         chi chay neu best_model.pt ton tai va dung cau hinh
+Resume transformer_pointcloud_net.pt  resume tu checkpoint epoch cuoi
+Checkpoint tuy chon                  chon mot file .pt bat ky
+```
+
+## 3. Chay nhanh smoke test end-to-end
+
+Lenh nay chay preprocessing nho, train 1 epoch, evaluate test split va tao anh so sanh point cloud predict voi ground truth.
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python run_all.py --quick --no-resume
+```
+
+Ket qua smoke test nam trong:
+
+```text
+results/smoke_test/
+  logs/baseline.log
+  metrics/training_metrics.csv
+  metrics/test_batch_metrics.csv
+  metrics/test_summary.json
+  outputs/checkpoints/best_model.pt
+  outputs/checkpoints/transformer_pointcloud_net.pt
+  outputs/comparison/<sample_id>_comparison.png
+  outputs/comparison/<sample_id>_pred.npy
+  outputs/comparison/<sample_id>_gt.npy
+  outputs/run_all_summary.json
+  outputs/training_curves.png
+```
+
+## 4. Chay preprocessing day du
 
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
 python main_workflow.py --skip-training --categories chair --max-samples 256
 ```
 
-## 3. Train baseline
+## 5. Train baseline theo category
 
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
-python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/baseline
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/chair_baseline
+```
+
+Mac dinh lenh train se tu dong resume tu checkpoint:
+
+```text
+results/<category>_baseline/outputs/checkpoints/best_model.pt
+```
+
+Neu checkpoint nay ton tai, lan train tiep theo se load `best_model.pt` va train tiep them so epoch duoc truyen trong `--epochs`. Neu muon train lai tu dau va bo qua checkpoint cu, them `--no-resume`:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/chair_baseline --no-resume
+```
+
+Neu muon resume tu mot checkpoint cu the, dung `--resume-checkpoint`:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/chair_baseline --resume-checkpoint results/chair_baseline/outputs/checkpoints/best_model.pt
 ```
 
 Artifact duoc luu vao:
 
 ```text
-results/baseline/
+results/<category>_baseline/
   logs/baseline.log
   metrics/training_metrics.csv
   outputs/baseline_summary.json
   outputs/training_curves.png
+  outputs/checkpoints/best_model.pt
   outputs/checkpoints/transformer_pointcloud_net.pt
 ```
 
-## 4. Evaluate checkpoint tren test split
+## 6. Evaluate checkpoint tren test split
 
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
-python -m src.evaluation.evaluate_baseline --split test --categories chair --batch-size 4 --output-dir results/baseline
+python -m src.evaluation.evaluate_baseline --split test --categories chair --batch-size 4 --output-dir results/chair_baseline
 ```
 
 Ket qua duoc luu vao:
 
 ```text
-results/baseline/metrics/test_batch_metrics.csv
-results/baseline/metrics/test_summary.json
+results/chair_baseline/metrics/test_batch_metrics.csv
+results/chair_baseline/metrics/test_summary.json
 ```
 
-## 5. Inference mot anh va export point cloud
-
-Dung anh da processed:
+## 7. So sanh point cloud predict voi ground truth
 
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
-python -m src.inference.baseline_inference --image data/processed/images/chair/2003.png --output-dir results/baseline/outputs/inference
+python -m src.inference.compare_pointclouds --split test --categories chair --output-dir results/chair_baseline/outputs/comparison
 ```
 
 Output:
 
 ```text
-results/baseline/outputs/inference/
+results/chair_baseline/outputs/comparison/
+  <sample_id>_comparison.png
+  <sample_id>_pred.npy
+  <sample_id>_gt.npy
+```
+
+## 8. Inference mot anh va export point cloud
+
+Dung anh da processed:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.inference.baseline_inference --image data/processed/images/chair/2003.png --output-dir results/chair_baseline/outputs/inference
+```
+
+Output:
+
+```text
+results/chair_baseline/outputs/inference/
   <image_name>.npy
   <image_name>.ply
   <image_name>.png
   <image_name>_summary.json
 ```
 
-## 6. Chay workflow tong
+## 9. Chay workflow tong
 
 Neu du lieu da preprocessing san:
 
@@ -91,7 +187,14 @@ $env:KMP_DUPLICATE_LIB_OK="TRUE"
 python main_workflow.py --categories chair --max-samples 256 --epochs 5 --batch-size 4 --overwrite
 ```
 
-## 7. Chay backend ky thuat
+Neu muon chay tron goi giong project phu, dung:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python run_all.py --category chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/chair_baseline
+```
+
+## 10. Chay backend ky thuat
 
 ```powershell
 cd ..\server

@@ -12,7 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
 from src.utils.logger import get_logger
 
 
-logger = get_logger("MainWorkflow")
+logger = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--raw-dir", default="data/raw/pix3d")
     parser.add_argument("--processed-dir", default="data/processed")
-    parser.add_argument("--output-dir", default="results/baseline")
+    parser.add_argument("--output-dir", default="results/chair_baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-points", type=int, default=512)
@@ -33,6 +33,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument(
+        "--best-metric",
+        choices=["val_chamfer_distance", "val_f_score"],
+        default="val_chamfer_distance",
+        help="Validation metric used to update outputs/checkpoints/best_model.pt.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        default=None,
+        help=(
+            "Checkpoint to resume from. Defaults to outputs/checkpoints/best_model.pt "
+            "inside --output-dir when it exists."
+        ),
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Start from a fresh model even when best_model.pt already exists.",
+    )
+    parser.set_defaults(resume=True)
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--embed-dim", type=int, default=256)
     parser.add_argument("--transformer-depth", type=int, default=4)
@@ -117,6 +139,10 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         epochs=args.epochs,
         lr=args.lr,
         f_threshold=args.f_threshold,
+        device=args.device,
+        best_metric=args.best_metric,
+        resume=args.resume,
+        resume_checkpoint=args.resume_checkpoint,
     )
 
 
@@ -135,7 +161,9 @@ def ensure_training_dependencies() -> None:
 
 
 def main() -> None:
+    global logger
     args = parse_args()
+    logger = get_logger("MainWorkflow", Path(args.output_dir) / "logs")
 
     if args.skip_preprocessing:
         logger.info("Bước 1/2: bỏ qua preprocessing, dùng dữ liệu có sẵn trong %s.", args.processed_dir)

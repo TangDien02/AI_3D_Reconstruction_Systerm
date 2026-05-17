@@ -1,0 +1,20 @@
+2026-05-17 00:30:24,340 [INFO] BaselineTraining - Starting baseline training on device=cpu
+2026-05-17 00:30:24,341 [INFO] BaselineTraining - Output directory: C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline
+2026-05-17 00:30:24,583 [INFO] BaselineTraining - Dataset ready: mode=processed split=train categories=bookcase samples=252
+2026-05-17 00:30:24,584 [INFO] BaselineTraining - Train samples: 201 | Val samples: 51
+2026-05-17 00:30:41,166 [INFO] BaselineTraining - Starting baseline training on device=cpu
+2026-05-17 00:30:41,166 [INFO] BaselineTraining - Output directory: C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline
+2026-05-17 00:30:41,352 [INFO] BaselineTraining - Dataset ready: mode=processed split=train categories=bookcase samples=252
+2026-05-17 00:30:41,352 [INFO] BaselineTraining - Train samples: 201 | Val samples: 51
+2026-05-17 00:31:17,435 [INFO] BaselineTraining - epoch=1 train_loss=0.054591 val_cd=0.014823 val_f=0.4027 best_val_f_score=0.402739
+2026-05-17 00:31:47,038 [INFO] BaselineTraining - epoch=2 train_loss=0.013042 val_cd=0.009900 val_f=0.4595 best_val_f_score=0.459546
+2026-05-17 00:32:18,138 [INFO] BaselineTraining - epoch=3 train_loss=0.009996 val_cd=0.008353 val_f=0.5217 best_val_f_score=0.521666
+2026-05-17 00:32:50,807 [INFO] BaselineTraining - epoch=4 train_loss=0.009043 val_cd=0.008037 val_f=0.5279 best_val_f_score=0.527899
+2026-05-17 00:33:20,587 [INFO] BaselineTraining - epoch=5 train_loss=0.008586 val_cd=0.007659 val_f=0.5523 best_val_f_score=0.552303
+2026-05-17 00:33:22,627 [INFO] BaselineTraining - Post-training evaluation on test split.
+2026-05-17 00:33:27,043 [INFO] BaselineTraining - Post-training point cloud comparison on test split.
+2026-05-17 00:33:28,076 [INFO] BaselineTraining - Saved metrics to C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline\metrics\training_metrics.csv
+2026-05-17 00:33:28,077 [INFO] BaselineTraining - Saved checkpoint to C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline\outputs\checkpoints\transformer_pointcloud_net.pt
+2026-05-17 00:33:28,077 [INFO] BaselineTraining - Saved best checkpoint to C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline\outputs\checkpoints\best_model.pt (epoch=5, val_f_score=0.552303)
+2026-05-17 00:33:28,077 [INFO] BaselineTraining - Saved summary to C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline\outputs\baseline_summary.json
+2026-05-17 00:33:28,077 [INFO] BaselineTraining - Saved training curves to C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\project\results\bookcase_baseline\outputs\training_curves.png

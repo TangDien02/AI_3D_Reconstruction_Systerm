@@ -62,6 +62,8 @@ project/data/processed/points/
 project/results/baseline/
 project/results/eda/
 project/results/logs/
+project/results/**/outputs/checkpoints/*.pt
+project/results/**/outputs/checkpoints/*.pth
 
 __pycache__/
 *.pyc
