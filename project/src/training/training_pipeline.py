@@ -140,7 +140,7 @@ def evaluate(model, dataloader, device, threshold):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train single-view 3D point cloud baseline")
     parser.add_argument("--raw-dir", default="data/raw")
-    parser.add_argument("--output-dir", default="results/training")
+    parser.add_argument("--output-dir", default="results")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--max-samples", type=int, default=64)
     parser.add_argument("--num-points", type=int, default=512)
@@ -160,7 +160,11 @@ def main():
     args = parse_args()
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     output_dir = (PROJECT_DIR / args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir = output_dir / "checkpoint"
+    metrics_dir = output_dir / "metrics"
+    outputs_dir = output_dir / "outputs"
+    for directory in (checkpoint_dir, metrics_dir, outputs_dir):
+        directory.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = Pix3DDataset(
@@ -199,7 +203,7 @@ def main():
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    metrics_path = output_dir / "training_metrics.csv"
+    metrics_path = metrics_dir / "training_metrics.csv"
     with metrics_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=["epoch", "train_loss", "val_chamfer_distance", "val_f_score"])
         writer.writeheader()
@@ -222,7 +226,7 @@ def main():
                 f"val_f={val_metrics['f_score']:.4f}"
             )
 
-    checkpoint_path = output_dir / "transformer_pointcloud_net.pt"
+    checkpoint_path = checkpoint_dir / "transformer_pointcloud_net.pt"
     torch.save(
         {
             "model_state_dict": model.state_dict(),

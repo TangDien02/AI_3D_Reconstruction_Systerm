@@ -270,32 +270,35 @@ def save_week2_visualizations(
     image_sizes, when provided, must contain columns: width, height.
     """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir = output_dir / "metrics"
+    outputs_dir = output_dir / "outputs"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    outputs_dir.mkdir(parents=True, exist_ok=True)
 
     paths = save_dataset_summary_tables(
         raw_data=raw_data,
         clean_data=clean_data,
-        output_dir=output_dir,
+        output_dir=metrics_dir,
         category_col=category_col,
     )
 
     if category_col in clean_data.columns:
         paths["category_distribution"] = plot_category_distribution(
             clean_data,
-            output_dir / "category_distribution.png",
+            outputs_dir / "category_distribution.png",
             category_col=category_col,
         )
 
     paths["cleaning_comparison"] = plot_cleaning_comparison(
         raw_count=len(raw_data),
         clean_count=len(clean_data),
-        output_path=output_dir / "cleaning_comparison.png",
+        output_path=outputs_dir / "cleaning_comparison.png",
     )
 
     if missing_counts is not None:
         paths["missing_files"] = plot_missing_files(
             missing_counts,
-            output_dir / "missing_files.png",
+            outputs_dir / "missing_files.png",
         )
 
     if image_sizes is not None:
@@ -305,7 +308,7 @@ def save_week2_visualizations(
         paths["image_size_distribution"] = plot_image_size_distribution(
             image_sizes["width"],
             image_sizes["height"],
-            output_dir / "image_size_distribution.png",
+            outputs_dir / "image_size_distribution.png",
         )
 
     return paths

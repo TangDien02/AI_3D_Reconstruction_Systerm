@@ -43,6 +43,8 @@ yarn-error.*
 server/uploads/
 server/models/
 project/results/training/
+project/results/checkpoint/*.pt
+project/results/checkpoint/*.pth
 
 # typescript
 *.tsbuildinfo
