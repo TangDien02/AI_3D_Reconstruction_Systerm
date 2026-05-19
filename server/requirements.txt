@@ -4,4 +4,7 @@ python-multipart
 numpy
 pillow
 matplotlib
+opencv-python
 torch
+torchvision
+ultralytics

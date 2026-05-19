@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
   Image,
   Pressable,
@@ -10,6 +11,12 @@ import {
   View,
 } from 'react-native';
 
+const API_BASE_URL = 'http://192.168.1.5:8000';
+const DETECT_FRAME_WIDTH = 416;
+const DETECT_CAPTURE_QUALITY = 0.25;
+const DETECT_UPLOAD_COMPRESS = 0.45;
+const DETECT_COOLDOWN_MS = 120;
+
 const workflowSteps = [
   'Nhận ảnh hoặc video object',
   'Phát hiện và crop vật thể',
@@ -18,8 +25,16 @@ const workflowSteps = [
 ];
 
 export default function App() {
+  const cameraRef = useRef(null);
+  const scanActiveRef = useRef(false);
+  const detectingRef = useRef(false);
   const [screen, setScreen] = useState('intro');
   const [cameraStatus, setCameraStatus] = useState('Camera đã sẵn sàng.');
+  const [isScanning, setIsScanning] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [detectedObjects, setDetectedObjects] = useState([]);
+  const [detectedImageSize, setDetectedImageSize] = useState(null);
+  const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
   const [permission, requestPermission] = useCameraPermissions();
 
   const openCamera = async () => {
@@ -36,6 +51,11 @@ export default function App() {
     }
 
     setCameraStatus('Camera đã sẵn sàng.');
+    scanActiveRef.current = false;
+    detectingRef.current = false;
+    setIsScanning(false);
+    setDetectedObjects([]);
+    setDetectedImageSize(null);
     setScreen('camera');
   };
 
@@ -43,14 +63,195 @@ export default function App() {
     setCameraStatus(`${action} sẽ được tích hợp ở bước AI backend.`);
   };
 
+  const scanCurrentFrame = async () => {
+    if (detectingRef.current || !scanActiveRef.current || !cameraRef.current) {
+      return;
+    }
+
+    detectingRef.current = true;
+    setIsDetecting(true);
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: DETECT_CAPTURE_QUALITY,
+        base64: false,
+        shutterSound: false,
+        skipProcessing: true,
+      });
+      const detectImage = await manipulateAsync(
+        photo.uri,
+        [{ resize: { width: DETECT_FRAME_WIDTH } }],
+        {
+          compress: DETECT_UPLOAD_COMPRESS,
+          format: SaveFormat.JPEG,
+        },
+      );
+
+      const formData = new FormData();
+      formData.append('image', {
+        uri: detectImage.uri,
+        name: 'camera-frame.jpg',
+        type: 'image/jpeg',
+      });
+
+      const response = await fetch(`${API_BASE_URL}/detect-frame`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const objects = Array.isArray(payload.objects) ? payload.objects : [];
+
+      if (scanActiveRef.current) {
+        setDetectedObjects(objects);
+        setDetectedImageSize({
+          width: payload.image_width || detectImage.width || photo.width || 0,
+          height: payload.image_height || detectImage.height || photo.height || 0,
+        });
+        setCameraStatus(
+          objects.length === 0
+            ? 'Dang quet lien tuc. Chua tim thay vat the.'
+            : `Dang quet lien tuc. YOLO detect ${objects.length} vat the.`,
+        );
+      }
+    } catch (error) {
+      if (scanActiveRef.current) {
+        setDetectedObjects([]);
+        setDetectedImageSize(null);
+        setCameraStatus(`Loi detect: ${error.message}`);
+      }
+    } finally {
+      detectingRef.current = false;
+      setIsDetecting(false);
+    }
+  };
+
+  const toggleScanning = () => {
+    if (scanActiveRef.current) {
+      scanActiveRef.current = false;
+      setIsScanning(false);
+      setIsDetecting(false);
+      setDetectedObjects([]);
+      setDetectedImageSize(null);
+      setCameraStatus('Da dung quet vat the.');
+      return;
+    }
+
+    scanActiveRef.current = true;
+    setIsScanning(true);
+    setDetectedObjects([]);
+    setDetectedImageSize(null);
+    setCameraStatus('Dang quet lien tuc...');
+  };
+
+  useEffect(() => {
+    if (screen !== 'camera' || !isScanning) {
+      return undefined;
+    }
+
+    let timer = null;
+    let cancelled = false;
+
+    const runLoop = async () => {
+      if (cancelled || !scanActiveRef.current) {
+        return;
+      }
+
+      await scanCurrentFrame();
+
+      if (!cancelled && scanActiveRef.current) {
+        timer = setTimeout(runLoop, DETECT_COOLDOWN_MS);
+      }
+    };
+
+    runLoop();
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [screen, isScanning]);
+
+  const mapDetectionBox = (object) => {
+    if (!detectedImageSize || !cameraLayout.width || !cameraLayout.height || !object?.bbox) {
+      return null;
+    }
+
+    const scale = Math.max(
+      cameraLayout.width / detectedImageSize.width,
+      cameraLayout.height / detectedImageSize.height,
+    );
+    const renderedWidth = detectedImageSize.width * scale;
+    const renderedHeight = detectedImageSize.height * scale;
+    const offsetX = (cameraLayout.width - renderedWidth) / 2;
+    const offsetY = (cameraLayout.height - renderedHeight) / 2;
+    const left = object.bbox.x * scale + offsetX;
+    const top = object.bbox.y * scale + offsetY;
+    const width = object.bbox.width * scale;
+    const height = object.bbox.height * scale;
+
+    if (width <= 1 || height <= 1) {
+      return null;
+    }
+
+    return { left, top, width, height };
+  };
+
+  const renderDetectionBox = (object) => {
+    const box = mapDetectionBox(object);
+    if (!box) {
+      return null;
+    }
+
+    const confidence = Math.round((object.confidence || 0) * 100);
+    return (
+      <View key={object.id} pointerEvents="none" style={[styles.detectionBox, box]}>
+        <View style={styles.detectionLabel}>
+          <Text style={styles.detectionLabelText}>
+            {object.label} {confidence}%
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
   if (screen === 'camera') {
     return (
-      <View style={styles.cameraScreen}>
-        <CameraView style={StyleSheet.absoluteFill} facing="back" />
+      <View
+        style={styles.cameraScreen}
+        onLayout={(event) => setCameraLayout(event.nativeEvent.layout)}
+      >
+        <CameraView
+          ref={cameraRef}
+          animateShutter={false}
+          style={StyleSheet.absoluteFill}
+          facing="back"
+        />
         <View style={styles.cameraShade} />
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          {isScanning && detectedObjects.map(renderDetectionBox)}
+        </View>
         <SafeAreaView style={styles.cameraOverlay}>
           <View style={styles.cameraTopBar}>
-            <Pressable style={styles.backButton} onPress={() => setScreen('intro')}>
+            <Pressable
+              style={styles.backButton}
+              onPress={() => {
+                scanActiveRef.current = false;
+                detectingRef.current = false;
+                setIsScanning(false);
+                setIsDetecting(false);
+                setDetectedObjects([]);
+                setDetectedImageSize(null);
+                setScreen('intro');
+              }}
+            >
               <Text style={styles.backButtonText}>Trở lại</Text>
             </Pressable>
             <View style={styles.liveBadge}>
@@ -71,10 +272,16 @@ export default function App() {
             <Text style={styles.panelText}>{cameraStatus}</Text>
             <View style={styles.actionRow}>
               <Pressable
-                style={[styles.cameraAction, styles.secondaryAction]}
-                onPress={() => showPlaceholder('Quét vật thể')}
+                style={[
+                  styles.cameraAction,
+                  styles.secondaryAction,
+                  isScanning && styles.scanningAction,
+                ]}
+                onPress={toggleScanning}
               >
-                <Text style={styles.secondaryActionText}>Quét vật thể</Text>
+                <Text style={styles.secondaryActionText}>
+                  {isScanning ? 'Dừng quét' : 'Quét vật thể'}
+                </Text>
               </Pressable>
               <Pressable
                 style={[styles.cameraAction, styles.primaryAction]}
@@ -338,6 +545,26 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.16)',
   },
+  detectionBox: {
+    position: 'absolute',
+    borderWidth: 3,
+    borderColor: '#A3E635',
+    backgroundColor: 'rgba(163, 230, 53, 0.14)',
+  },
+  detectionLabel: {
+    position: 'absolute',
+    left: -3,
+    top: -30,
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    backgroundColor: '#A3E635',
+  },
+  detectionLabelText: {
+    color: '#1A2E05',
+    fontSize: 13,
+    fontWeight: '900',
+  },
   cameraOverlay: {
     flex: 1,
     justifyContent: 'space-between',
@@ -448,6 +675,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#D0D5DD',
     backgroundColor: '#FFFFFF',
+  },
+  scanningAction: {
+    borderColor: '#A3E635',
+    backgroundColor: '#ECFCCB',
+  },
+  disabledCameraAction: {
+    opacity: 0.65,
   },
   secondaryActionText: {
     color: '#344054',
