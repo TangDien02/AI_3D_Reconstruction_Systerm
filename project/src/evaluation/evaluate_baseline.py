@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_baseline/outputs/checkpoints/transformer_pointcloud_net.pt",
+        default="results/chair_baseline/outputs/checkpoints/best_model.pt",
     )
     parser.add_argument("--output-dir", default="results/chair_baseline")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])

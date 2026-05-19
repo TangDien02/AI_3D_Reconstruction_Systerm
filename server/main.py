@@ -17,7 +17,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 UPLOAD_DIR = SERVER_DIR / "uploads"
 MODEL_OUTPUT_DIR = SERVER_DIR / "models"
-BASELINE_CHECKPOINT = PROJECT_DIR / "results" / "baseline" / "outputs" / "checkpoints" / "transformer_pointcloud_net.pt"
+BASELINE_CHECKPOINT = PROJECT_DIR / "results" / "chair_baseline" / "outputs" / "checkpoints" / "best_model.pt"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -15,8 +15,9 @@ from torch.utils.data import DataLoader, random_split
 # Dau vao la anh 2D da duoc dataloader xu ly, dau ra la point cloud 3D du doan.
 #
 # Luong xu ly:
-# 1. Tao Pix3DDataset tu project/data/raw/pix3d.json.
-# 2. Chia du lieu thanh train/validation.
+# 1. Tao dataset tu raw Pix3D hoac data/processed.
+# 2. Voi data processed, dung truc tiep splits/train.csv va splits/val.csv.
+#    Voi data raw, fallback ve random split train/validation.
 # 3. Dung DataLoader tao batch anh va point cloud ground truth.
 # 4. Dua anh vao TransformerPointCloudNet de du doan point cloud.
 # 5. Tinh Chamfer Distance giua point cloud du doan va ground truth.
@@ -155,9 +156,26 @@ def parse_args():
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument("--output-dir", default="results/chair_baseline")
     parser.add_argument("--dataset-mode", choices=["raw", "processed"], default="processed")
-    parser.add_argument("--split", default="train")
+    parser.add_argument(
+        "--split",
+        default="train",
+        choices=["train", "val", "test"],
+        help="Processed split used for training.",
+    )
+    parser.add_argument(
+        "--val-split",
+        default="val",
+        choices=["train", "val", "test"],
+        help="Processed split used for validation.",
+    )
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument(
+        "--val-max-samples",
+        type=int,
+        default=None,
+        help="Limit validation samples. Defaults to --max-samples for processed smoke tests.",
+    )
     parser.add_argument("--num-points", type=int, default=512)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--patch-size", type=int, default=16)
@@ -240,7 +258,9 @@ def build_checkpoint(
         "learning_rate": args.lr,
         "dataset_mode": args.dataset_mode,
         "split": args.split,
+        "val_split": getattr(args, "val_split", None),
         "max_samples": args.max_samples,
+        "val_max_samples": getattr(args, "val_max_samples", None),
         "resumed_from_checkpoint": str(resumed_from_checkpoint) if resumed_from_checkpoint else None,
     }
     if optimizer is not None:
@@ -527,6 +547,10 @@ def run_training(args):
         args.post_split = "test"
     if not hasattr(args, "eval_max_samples"):
         args.eval_max_samples = None
+    if not hasattr(args, "val_split"):
+        args.val_split = "val"
+    if not hasattr(args, "val_max_samples"):
+        args.val_max_samples = None
     if not hasattr(args, "comparison_index"):
         args.comparison_index = 0
     if not hasattr(args, "max_plot_points"):
@@ -548,11 +572,20 @@ def run_training(args):
     logger.info("Starting baseline training on device=%s", device)
     logger.info("Output directory: %s", output_dir)
     if args.dataset_mode == "processed":
-        dataset = ProcessedPix3DDataset(
+        train_dataset = ProcessedPix3DDataset(
             processed_dir=processed_dir,
             split=args.split,
             categories=args.categories,
             max_samples=args.max_samples,
+        )
+        validation_max_samples = args.val_max_samples
+        if validation_max_samples is None:
+            validation_max_samples = args.max_samples
+        val_dataset = ProcessedPix3DDataset(
+            processed_dir=processed_dir,
+            split=args.val_split,
+            categories=args.categories,
+            max_samples=validation_max_samples,
         )
     else:
         dataset = Pix3DDataset(
@@ -563,26 +596,35 @@ def run_training(args):
             max_samples=args.max_samples,
         )
 
-    if len(dataset) < 2:
-        raise RuntimeError("Dataset needs at least 2 samples for train/validation split.")
+        if len(dataset) < 2:
+            raise RuntimeError("Dataset needs at least 2 samples for train/validation split.")
+        train_size = max(1, int(len(dataset) * 0.8))
+        val_size = len(dataset) - train_size
+        if val_size == 0:
+            train_size -= 1
+            val_size = 1
+
+        train_dataset, val_dataset = random_split(
+            dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42),
+        )
+
+    train_size = len(train_dataset)
+    val_size = len(val_dataset)
+    if train_size < 1:
+        raise RuntimeError(f"Training split is empty: {args.split}")
+    if val_size < 1:
+        raise RuntimeError(f"Validation split is empty: {args.val_split}")
+
     logger.info(
-        "Dataset ready: mode=%s split=%s categories=%s samples=%s",
+        "Dataset ready: mode=%s train_split=%s val_split=%s categories=%s train_samples=%s val_samples=%s",
         args.dataset_mode,
         args.split,
+        args.val_split if args.dataset_mode == "processed" else "random",
         ",".join(args.categories),
-        len(dataset),
-    )
-
-    train_size = max(1, int(len(dataset) * 0.8))
-    val_size = len(dataset) - train_size
-    if val_size == 0:
-        train_size -= 1
-        val_size = 1
-
-    train_dataset, val_dataset = random_split(
-        dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
+        train_size,
+        val_size,
     )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -719,8 +761,12 @@ def run_training(args):
     summary = {
         "dataset_mode": args.dataset_mode,
         "split": args.split,
+        "val_split": args.val_split,
         "categories": args.categories,
         "max_samples": args.max_samples,
+        "val_max_samples": args.val_max_samples,
+        "train_samples": train_size,
+        "val_samples": val_size,
         "num_points": args.num_points,
         "image_size": args.image_size,
         "batch_size": args.batch_size,

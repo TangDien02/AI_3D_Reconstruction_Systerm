@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=True, help="Input RGB image path.")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_baseline/outputs/checkpoints/transformer_pointcloud_net.pt",
+        default="results/chair_baseline/outputs/checkpoints/best_model.pt",
         help="Baseline checkpoint path relative to project/ or absolute.",
     )
     parser.add_argument("--output-dir", default="results/chair_baseline/outputs/inference")
