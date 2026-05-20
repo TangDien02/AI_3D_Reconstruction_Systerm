@@ -37,6 +37,15 @@ _yolo_model = None
 _yolo_model_lock = Lock()
 
 
+def get_yolo_device() -> str:
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+
+    return "0" if torch.cuda.is_available() else "cpu"
+
+
 def get_yolo_model():
     global _yolo_model
 
@@ -126,6 +135,7 @@ def warmup_yolo_model():
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            device=get_yolo_device(),
             verbose=False,
         )
     except Exception as exc:
@@ -138,6 +148,7 @@ def health_check():
         "status": "ok",
         "baseline_checkpoint_exists": BASELINE_CHECKPOINT.is_file(),
         "yolo_weights_exists": YOLO_WEIGHTS.is_file(),
+        "yolo_device": get_yolo_device(),
     }
 
 
@@ -169,6 +180,7 @@ async def segment_object(
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            device=get_yolo_device(),
             verbose=False,
         )
     except Exception as exc:
@@ -276,6 +288,12 @@ async def segment_object(
         "image_height": image_height,
         "processing_ms": round((time.perf_counter() - started_at) * 1000, 1),
         "selected": selected_response,
+        "detector": {
+            "imgsz": DETECTION_IMAGE_SIZE,
+            "conf": DETECTION_CONFIDENCE,
+            "max_det": DETECTION_MAX_OBJECTS,
+            "device": get_yolo_device(),
+        },
         "files": {
             "original": to_relative_url(original_path),
             "mask": to_relative_url(mask_path),
@@ -308,6 +326,7 @@ async def detect_frame(image: UploadFile = File(...)):
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            device=get_yolo_device(),
             verbose=False,
         )
     except Exception as exc:
@@ -346,6 +365,7 @@ async def detect_frame(image: UploadFile = File(...)):
             "imgsz": DETECTION_IMAGE_SIZE,
             "conf": DETECTION_CONFIDENCE,
             "max_det": DETECTION_MAX_OBJECTS,
+            "device": get_yolo_device(),
         },
         "objects": detections,
     }
