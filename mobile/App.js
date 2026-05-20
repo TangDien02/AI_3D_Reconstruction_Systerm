@@ -32,10 +32,32 @@ export default function App() {
   const [cameraStatus, setCameraStatus] = useState('Camera đã sẵn sàng.');
   const [isScanning, setIsScanning] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
+  const [isSegmenting, setIsSegmenting] = useState(false);
   const [detectedObjects, setDetectedObjects] = useState([]);
   const [detectedImageSize, setDetectedImageSize] = useState(null);
   const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
+  const [latestDetectImageUri, setLatestDetectImageUri] = useState(null);
+  const [selectedObject, setSelectedObject] = useState(null);
+  const [selectedFrameUri, setSelectedFrameUri] = useState(null);
+  const [segmentResult, setSegmentResult] = useState(null);
   const [permission, requestPermission] = useCameraPermissions();
+
+  const clearObjectState = () => {
+    setDetectedObjects([]);
+    setDetectedImageSize(null);
+    setLatestDetectImageUri(null);
+    setSelectedObject(null);
+    setSelectedFrameUri(null);
+    setSegmentResult(null);
+  };
+
+  const getServerFileUrl = (path) => {
+    if (!path) {
+      return null;
+    }
+
+    return path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+  };
 
   const openCamera = async () => {
     if (!permission) {
@@ -54,13 +76,13 @@ export default function App() {
     scanActiveRef.current = false;
     detectingRef.current = false;
     setIsScanning(false);
-    setDetectedObjects([]);
-    setDetectedImageSize(null);
+    setIsSegmenting(false);
+    clearObjectState();
     setScreen('camera');
   };
 
-  const showPlaceholder = (action) => {
-    setCameraStatus(`${action} sẽ được tích hợp ở bước AI backend.`);
+  const showPlaceholder = () => {
+    reconstructSelectedObject();
   };
 
   const scanCurrentFrame = async () => {
@@ -109,6 +131,7 @@ export default function App() {
 
       if (scanActiveRef.current) {
         setDetectedObjects(objects);
+        setLatestDetectImageUri(detectImage.uri);
         setDetectedImageSize({
           width: payload.image_width || detectImage.width || photo.width || 0,
           height: payload.image_height || detectImage.height || photo.height || 0,
@@ -123,6 +146,7 @@ export default function App() {
       if (scanActiveRef.current) {
         setDetectedObjects([]);
         setDetectedImageSize(null);
+        setLatestDetectImageUri(null);
         setCameraStatus(`Loi detect: ${error.message}`);
       }
     } finally {
@@ -136,17 +160,69 @@ export default function App() {
       scanActiveRef.current = false;
       setIsScanning(false);
       setIsDetecting(false);
-      setDetectedObjects([]);
-      setDetectedImageSize(null);
+      clearObjectState();
       setCameraStatus('Da dung quet vat the.');
       return;
     }
 
     scanActiveRef.current = true;
     setIsScanning(true);
-    setDetectedObjects([]);
-    setDetectedImageSize(null);
+    clearObjectState();
     setCameraStatus('Dang quet lien tuc...');
+  };
+
+  const selectDetectedObject = (object) => {
+    if (!latestDetectImageUri || !object?.bbox) {
+      setCameraStatus('Chua co frame detect hop le de chon vat the.');
+      return;
+    }
+
+    setSelectedObject(object);
+    setSelectedFrameUri(latestDetectImageUri);
+    setSegmentResult(null);
+    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de mask/crop.`);
+  };
+
+  const reconstructSelectedObject = async () => {
+    if (!selectedObject?.bbox || !selectedFrameUri) {
+      setCameraStatus('Hay cham vao bbox vat the truoc khi Tai tao.');
+      return;
+    }
+
+    setIsSegmenting(true);
+    setCameraStatus('Dang mask/crop vat the da chon...');
+
+    try {
+      const formData = new FormData();
+      formData.append('image', {
+        uri: selectedFrameUri,
+        name: 'selected-object-frame.jpg',
+        type: 'image/jpeg',
+      });
+      formData.append('bbox_x', String(selectedObject.bbox.x));
+      formData.append('bbox_y', String(selectedObject.bbox.y));
+      formData.append('bbox_width', String(selectedObject.bbox.width));
+      formData.append('bbox_height', String(selectedObject.bbox.height));
+
+      const response = await fetch(`${API_BASE_URL}/segment-object`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      setSegmentResult(payload);
+      setCameraStatus(`Da tao mask/crop cho ${payload.selected?.label || selectedObject.label}.`);
+    } catch (error) {
+      setSegmentResult(null);
+      setCameraStatus(`Loi mask/crop: ${error.message}`);
+    } finally {
+      setIsSegmenting(false);
+    }
   };
 
   useEffect(() => {
@@ -211,14 +287,19 @@ export default function App() {
     }
 
     const confidence = Math.round((object.confidence || 0) * 100);
+    const isSelected = selectedObject?.id === object.id;
     return (
-      <View key={object.id} pointerEvents="none" style={[styles.detectionBox, box]}>
+      <Pressable
+        key={object.id}
+        style={[styles.detectionBox, isSelected && styles.selectedDetectionBox, box]}
+        onPress={() => selectDetectedObject(object)}
+      >
         <View style={styles.detectionLabel}>
           <Text style={styles.detectionLabelText}>
             {object.label} {confidence}%
           </Text>
         </View>
-      </View>
+      </Pressable>
     );
   };
 
@@ -235,10 +316,10 @@ export default function App() {
           facing="back"
         />
         <View style={styles.cameraShade} />
-        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
           {isScanning && detectedObjects.map(renderDetectionBox)}
         </View>
-        <SafeAreaView style={styles.cameraOverlay}>
+        <SafeAreaView pointerEvents="box-none" style={styles.cameraOverlay}>
           <View style={styles.cameraTopBar}>
             <Pressable
               style={styles.backButton}
@@ -247,8 +328,8 @@ export default function App() {
                 detectingRef.current = false;
                 setIsScanning(false);
                 setIsDetecting(false);
-                setDetectedObjects([]);
-                setDetectedImageSize(null);
+                setIsSegmenting(false);
+                clearObjectState();
                 setScreen('intro');
               }}
             >
@@ -270,6 +351,20 @@ export default function App() {
           <View style={styles.cameraPanel}>
             <Text style={styles.panelTitle}>Đưa vật thể vào khung</Text>
             <Text style={styles.panelText}>{cameraStatus}</Text>
+            {selectedObject && (
+              <Text style={styles.selectedText}>
+                Da chon: {selectedObject.label} {Math.round((selectedObject.confidence || 0) * 100)}%
+              </Text>
+            )}
+            {segmentResult?.files?.masked_crop && (
+              <View style={styles.segmentPreview}>
+                <Image
+                  source={{ uri: getServerFileUrl(segmentResult.files.masked_crop) }}
+                  style={styles.segmentPreviewImage}
+                />
+                <Text style={styles.segmentPreviewText}>Masked crop san sang cho buoc 3D.</Text>
+              </View>
+            )}
             <View style={styles.actionRow}>
               <Pressable
                 style={[
@@ -284,10 +379,17 @@ export default function App() {
                 </Text>
               </Pressable>
               <Pressable
-                style={[styles.cameraAction, styles.primaryAction]}
+                style={[
+                  styles.cameraAction,
+                  styles.primaryAction,
+                  (!selectedObject || isSegmenting) && styles.disabledCameraAction,
+                ]}
+                disabled={!selectedObject || isSegmenting}
                 onPress={() => showPlaceholder('Tái tạo 3D')}
               >
-                <Text style={styles.primaryActionText}>Tái tạo</Text>
+                <Text style={styles.primaryActionText}>
+                  {isSegmenting ? 'Dang xu ly' : 'Tái tạo'}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -551,6 +653,10 @@ const styles = StyleSheet.create({
     borderColor: '#A3E635',
     backgroundColor: 'rgba(163, 230, 53, 0.14)',
   },
+  selectedDetectionBox: {
+    borderColor: '#155EEF',
+    backgroundColor: 'rgba(21, 94, 239, 0.18)',
+  },
   detectionLabel: {
     position: 'absolute',
     left: -3,
@@ -658,6 +764,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     marginTop: 6,
+  },
+  selectedText: {
+    color: '#155EEF',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  segmentPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+  },
+  segmentPreviewImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#D0D5DD',
+    backgroundColor: '#FFFFFF',
+  },
+  segmentPreviewText: {
+    flex: 1,
+    color: '#344054',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   actionRow: {
     flexDirection: 'row',

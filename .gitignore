@@ -43,6 +43,7 @@ yarn-error.*
 server/uploads/
 server/models/
 server/smoke_outputs/
+server/segment_outputs/
 project/results/training/
 project/results/inference/
 project/results/week2_eda/
