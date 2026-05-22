@@ -24,15 +24,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results/baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--num-points", type=int, default=512)
+    parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-samples", type=int, default=256)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Limit samples for quick smoke tests. Omit or pass -1 to use all samples.",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--best-metric",
+        choices=["val_chamfer_distance", "val_f_score"],
+        default="val_chamfer_distance",
+    )
     parser.add_argument("--patch-size", type=int, default=16)
     parser.add_argument("--embed-dim", type=int, default=256)
     parser.add_argument("--transformer-depth", type=int, default=4)
@@ -43,7 +53,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-images", action="store_true")
     parser.add_argument("--skip-pointclouds", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=100)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_samples is not None and args.max_samples < 0:
+        args.max_samples = None
+    return args
 
 
 def run_preprocessing(args: argparse.Namespace) -> dict[str, Path]:
@@ -117,6 +130,7 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         epochs=args.epochs,
         lr=args.lr,
         f_threshold=args.f_threshold,
+        best_metric=args.best_metric,
     )
 
 
