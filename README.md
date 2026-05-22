@@ -132,7 +132,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
-python main_workflow.py --categories chair --max-samples 256 --epochs 5 --batch-size 4 --overwrite
+python main_workflow.py --categories chair --epochs 5 --batch-size 4 --overwrite
 ```
 
 ### Evaluate checkpoint

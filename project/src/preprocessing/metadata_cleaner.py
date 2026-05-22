@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,10 +35,16 @@ def _relative_processed_mask_path(row: pd.Series) -> str:
     return str(Path("masks") / str(row["category"]) / f"{mask_path.stem}.png").replace("\\", "/")
 
 
+def _stable_model_uid(model_rel_path: str) -> str:
+    normalized_path = str(model_rel_path).replace("\\", "/").strip()
+    path_hash = hashlib.sha1(normalized_path.encode("utf-8")).hexdigest()[:12]
+    model_stem = Path(normalized_path).stem or "model"
+    return f"{model_stem}_{path_hash}"
+
+
 def _relative_point_path(row: pd.Series) -> str:
-    model_path = Path(str(row["model"]))
-    model_id = model_path.parent.name or model_path.stem
-    return str(Path("points") / str(row["category"]) / f"{model_id}.npy").replace("\\", "/")
+    model_uid = str(row["model_uid"])
+    return str(Path("points") / str(row["category"]) / f"{model_uid}.npy").replace("\\", "/")
 
 
 def clean_pix3d_metadata(raw_dir: str | Path, categories: Iterable[str] | None = None) -> pd.DataFrame:
@@ -71,6 +78,7 @@ def clean_pix3d_metadata(raw_dir: str | Path, categories: Iterable[str] | None =
 
     clean_data = clean_data.reset_index(drop=True)
     clean_data.insert(0, "sample_id", clean_data.index.map(lambda idx: f"pix3d_{idx:05d}"))
+    clean_data["model_uid"] = clean_data["model"].apply(_stable_model_uid)
     clean_data["processed_image"] = clean_data.apply(_relative_processed_image_path, axis=1)
     clean_data["processed_mask"] = clean_data.apply(_relative_processed_mask_path, axis=1)
     clean_data["pointcloud"] = clean_data.apply(_relative_point_path, axis=1)
@@ -84,39 +92,75 @@ def make_stratified_splits(
     val_ratio: float = 0.15,
     seed: int = 42,
 ) -> dict[str, pd.DataFrame]:
-    if "category" not in metadata.columns:
-        raise KeyError("metadata must contain a 'category' column.")
-    if train_ratio <= 0 or val_ratio < 0 or train_ratio + val_ratio >= 1:
-        raise ValueError("Use ratios where train_ratio > 0, val_ratio >= 0, and train + val < 1.")
+    required_cols = {"category", "model_uid"}
+    missing_cols = required_cols - set(metadata.columns)
 
-    shuffled = metadata.groupby("category", group_keys=False).sample(frac=1, random_state=seed)
+    if missing_cols:
+        raise KeyError(f"metadata must contain columns: {missing_cols}")
+
+    if train_ratio <= 0 or val_ratio < 0 or train_ratio + val_ratio >= 1:
+        raise ValueError(
+            "Use ratios where train_ratio > 0, val_ratio >= 0, and train + val < 1."
+        )
+
     train_parts = []
     val_parts = []
     test_parts = []
 
-    for _, group in shuffled.groupby("category", sort=False):
-        n_items = len(group)
-        train_end = int(n_items * train_ratio)
-        val_end = train_end + int(n_items * val_ratio)
+    for category, group in metadata.groupby("category", sort=False):
+        unique_models = (
+            group[["model_uid"]]
+            .drop_duplicates()
+            .sample(frac=1, random_state=seed)
+            .reset_index(drop=True)
+        )
 
-        if n_items >= 3:
-            train_end = max(1, min(train_end, n_items - 2))
-            val_end = max(train_end + 1, min(val_end, n_items - 1))
-        elif n_items == 2:
-            train_end = 1
-            val_end = 1
+        n_models = len(unique_models)
+
+        if n_models == 0:
+            continue
+
+        if n_models == 1:
+            train_model_ids = set(unique_models["model_uid"])
+            val_model_ids = set()
+            test_model_ids = set()
+
+        elif n_models == 2:
+            train_model_ids = set(unique_models.iloc[:1]["model_uid"])
+            val_model_ids = set()
+            test_model_ids = set(unique_models.iloc[1:]["model_uid"])
+
         else:
-            train_end = 1
-            val_end = 1
+            train_end = int(n_models * train_ratio)
+            val_end = train_end + int(n_models * val_ratio)
 
-        train_parts.append(group.iloc[:train_end])
-        val_parts.append(group.iloc[train_end:val_end])
-        test_parts.append(group.iloc[val_end:])
+            train_end = max(1, min(train_end, n_models - 2))
+            val_end = max(train_end + 1, min(val_end, n_models - 1))
+
+            train_model_ids = set(unique_models.iloc[:train_end]["model_uid"])
+            val_model_ids = set(unique_models.iloc[train_end:val_end]["model_uid"])
+            test_model_ids = set(unique_models.iloc[val_end:]["model_uid"])
+
+        train_parts.append(group[group["model_uid"].isin(train_model_ids)])
+        val_parts.append(group[group["model_uid"].isin(val_model_ids)])
+        test_parts.append(group[group["model_uid"].isin(test_model_ids)])
+
+    def _concat_or_empty(parts: list[pd.DataFrame]) -> pd.DataFrame:
+        valid_parts = [part for part in parts if len(part) > 0]
+
+        if not valid_parts:
+            return metadata.iloc[0:0].copy().reset_index(drop=True)
+
+        return (
+            pd.concat(valid_parts)
+            .sample(frac=1, random_state=seed)
+            .reset_index(drop=True)
+        )
 
     return {
-        "train": pd.concat(train_parts).sample(frac=1, random_state=seed).reset_index(drop=True),
-        "val": pd.concat(val_parts).sample(frac=1, random_state=seed).reset_index(drop=True),
-        "test": pd.concat(test_parts).sample(frac=1, random_state=seed).reset_index(drop=True),
+        "train": _concat_or_empty(train_parts),
+        "val": _concat_or_empty(val_parts),
+        "test": _concat_or_empty(test_parts),
     }
 
 
