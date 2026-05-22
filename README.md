@@ -18,7 +18,7 @@ Trạng thái code hiện tại trong `project/` đang chạy chắc nhất ở 
 Pix3D object image
 → preprocessing bbox/mask/resize
 → point cloud ground truth từ CAD mesh
-→ Transformer baseline
+→ ResNet encoder + point cloud decoder
 → point cloud prediction
 → Chamfer Distance / F-score
 ```
@@ -115,7 +115,7 @@ Output object set
 1. **Chuẩn bị dữ liệu Pix3D**: đặt dữ liệu raw tại `project/data/raw/pix3d`, gồm `pix3d.json`, ảnh, mask và CAD model.
 2. **Làm sạch metadata**: `project/src/preprocessing/metadata_cleaner.py` kiểm tra cột bắt buộc, file tồn tại, category và sinh đường dẫn processed.
 3. **Tạo dữ liệu processed**: `project/src/preprocessing/build_processed_dataset.py` crop bbox, apply mask, resize ảnh/mask; `mesh_processor.py` sample mesh `.obj` thành point cloud `.npy`.
-4. **Train baseline**: `project/src/training/training_pipeline.py` dùng `TransformerPointCloudNet` dự đoán point cloud từ ảnh, tối ưu bằng Chamfer Distance.
+4. **Train baseline**: `project/src/training/training_pipeline.py` dùng ResNet encoder + point cloud decoder dự đoán point cloud từ ảnh, tối ưu bằng Chamfer Distance.
 5. **Evaluate**: `project/src/evaluation/evaluate_baseline.py` tính Chamfer Distance, F-score, precision, recall trên split train/val/test.
 6. **Inference một ảnh**: `project/src/inference/baseline_inference.py` load checkpoint, xuất `.npy`, `.ply`, `.png`, JSON summary.
 7. **API backend**: `server/main.py` expose `/health`, các endpoint mock scan, và `/reconstruct-image` để gọi baseline inference nếu checkpoint tồn tại.
@@ -194,7 +194,6 @@ Scene image → object set 2D → object set 3D → export `.ply`/`.obj`/metadat
 ## 8. Các Điểm Chưa Khớp Cần Lưu Ý
 
 - Pipeline ML hiện tại vẫn là **single image → point cloud**, chưa phải video 360 hoặc full scene mesh.
-- `server/vit_reconstruction.py` là minh họa ViT riêng, chưa nối với training checkpoint chính.
 - Detection/video/status endpoint trong `server` hiện vẫn mock.
 - Frontend source chưa đầy đủ so với cấu hình npm/Jest cũ.
 - `tester/` đang kiểm thử CRUD blog, chưa phải test domain 3D reconstruction.

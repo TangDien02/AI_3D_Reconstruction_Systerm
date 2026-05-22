@@ -408,7 +408,7 @@ inference metadata JSON
 | Chamfer/F-score | Có trong `src/metrics/losses.py`. |
 | Inference single image | Có trong `src/inference/baseline_inference.py`. |
 | Scene-level detection/segmentation | Mới có fallback/mocking, cần phát triển thật. |
-| Pretrained ResNet/ViT + PEFT | Chưa tích hợp vào training chính. |
+| Pretrained ResNet/ViT + PEFT | ResNet đã nối vào training chính; ViT/PEFT để sau. |
 | ADA | Chưa tích hợp. |
 | Teacher-student/pseudo-labeling | Chưa tích hợp. |
 | Mesh/GLB output | Chưa có, hiện output chính là point cloud. |

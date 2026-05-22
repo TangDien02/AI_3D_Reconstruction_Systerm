@@ -12,7 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
 from src.utils.logger import get_logger
 
 
-logger = get_logger("MainWorkflow")
+logger = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--raw-dir", default="data/raw/pix3d")
     parser.add_argument("--processed-dir", default="data/processed")
-    parser.add_argument("--output-dir", default="results/baseline")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-points", type=int, default=2048)
@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument(
         "--best-metric",
         choices=["val_chamfer_distance", "val_f_score"],
@@ -47,6 +53,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embed-dim", type=int, default=256)
     parser.add_argument("--transformer-depth", type=int, default=4)
     parser.add_argument("--num-heads", type=int, default=8)
+        help="Validation metric used to update outputs/checkpoints/best_model.pt.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        default=None,
+        help=(
+            "Checkpoint to resume from. Defaults to outputs/checkpoints/best_model.pt "
+            "inside --output-dir when it exists."
+        ),
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Start from a fresh model even when best_model.pt already exists.",
+    )
+    parser.set_defaults(resume=True)
+    parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
+    parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--skip-preprocessing", action="store_true")
     parser.add_argument("--skip-training", action="store_true")
@@ -122,22 +149,26 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         max_samples=args.max_samples,
         num_points=args.num_points,
         image_size=args.image_size,
-        patch_size=args.patch_size,
-        embed_dim=args.embed_dim,
-        transformer_depth=args.transformer_depth,
-        num_heads=args.num_heads,
+        encoder_name=args.encoder_name,
+        feature_dim=args.feature_dim,
+        pretrained=args.pretrained,
+        freeze_encoder=args.freeze_encoder,
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
         f_threshold=args.f_threshold,
         best_metric=args.best_metric,
+        device=args.device,
+        best_metric=args.best_metric,
+        resume=args.resume,
+        resume_checkpoint=args.resume_checkpoint,
     )
 
 
 def ensure_training_dependencies() -> None:
     missing = [
         package
-        for package in ("torch", "numpy", "pandas", "PIL")
+        for package in ("torch", "torchvision", "numpy", "pandas", "PIL")
         if importlib.util.find_spec(package) is None
     ]
     if missing:
@@ -149,7 +180,9 @@ def ensure_training_dependencies() -> None:
 
 
 def main() -> None:
+    global logger
     args = parse_args()
+    logger = get_logger("MainWorkflow", Path(args.output_dir) / "logs")
 
     if args.skip_preprocessing:
         logger.info("Bước 1/2: bỏ qua preprocessing, dùng dữ liệu có sẵn trong %s.", args.processed_dir)
@@ -160,7 +193,7 @@ def main() -> None:
         logger.info("Bước 2/2: bỏ qua training baseline theo tham số --skip-training.")
         return
 
-    logger.info("Bước 2/2: train baseline Transformer point cloud.")
+    logger.info("Bước 2/2: train baseline ResNet point cloud.")
     ensure_training_dependencies()
     from src.training.training_pipeline import run_training
 

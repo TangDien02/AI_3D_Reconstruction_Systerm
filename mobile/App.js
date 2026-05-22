@@ -1,0 +1,832 @@
+import { useEffect, useRef, useState } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import {
+  Image,
+  Pressable,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+
+const API_BASE_URL = 'http://192.168.1.5:8000';
+const DETECT_FRAME_WIDTH = 416;
+const DETECT_CAPTURE_QUALITY = 0.25;
+const DETECT_UPLOAD_COMPRESS = 0.45;
+const DETECT_COOLDOWN_MS = 120;
+
+const workflowSteps = [
+  'Nhận ảnh hoặc video object',
+  'Phát hiện và crop vật thể',
+  'Trích xuất feature ảnh',
+  'Tái tạo point cloud / model 3D',
+];
+
+export default function App() {
+  const cameraRef = useRef(null);
+  const scanActiveRef = useRef(false);
+  const detectingRef = useRef(false);
+  const [screen, setScreen] = useState('intro');
+  const [cameraStatus, setCameraStatus] = useState('Camera đã sẵn sàng.');
+  const [isScanning, setIsScanning] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [isSegmenting, setIsSegmenting] = useState(false);
+  const [detectedObjects, setDetectedObjects] = useState([]);
+  const [detectedImageSize, setDetectedImageSize] = useState(null);
+  const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
+  const [latestDetectImageUri, setLatestDetectImageUri] = useState(null);
+  const [selectedObject, setSelectedObject] = useState(null);
+  const [selectedFrameUri, setSelectedFrameUri] = useState(null);
+  const [segmentResult, setSegmentResult] = useState(null);
+  const [permission, requestPermission] = useCameraPermissions();
+
+  const clearObjectState = () => {
+    setDetectedObjects([]);
+    setDetectedImageSize(null);
+    setLatestDetectImageUri(null);
+    setSelectedObject(null);
+    setSelectedFrameUri(null);
+    setSegmentResult(null);
+  };
+
+  const getServerFileUrl = (path) => {
+    if (!path) {
+      return null;
+    }
+
+    return path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+  };
+
+  const openCamera = async () => {
+    if (!permission) {
+      return;
+    }
+
+    if (!permission.granted) {
+      const nextPermission = await requestPermission();
+      if (!nextPermission.granted) {
+        setScreen('permission');
+        return;
+      }
+    }
+
+    setCameraStatus('Camera đã sẵn sàng.');
+    scanActiveRef.current = false;
+    detectingRef.current = false;
+    setIsScanning(false);
+    setIsSegmenting(false);
+    clearObjectState();
+    setScreen('camera');
+  };
+
+  const showPlaceholder = () => {
+    reconstructSelectedObject();
+  };
+
+  const scanCurrentFrame = async () => {
+    if (detectingRef.current || !scanActiveRef.current || !cameraRef.current) {
+      return;
+    }
+
+    detectingRef.current = true;
+    setIsDetecting(true);
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: DETECT_CAPTURE_QUALITY,
+        base64: false,
+        shutterSound: false,
+        skipProcessing: true,
+      });
+      const detectImage = await manipulateAsync(
+        photo.uri,
+        [{ resize: { width: DETECT_FRAME_WIDTH } }],
+        {
+          compress: DETECT_UPLOAD_COMPRESS,
+          format: SaveFormat.JPEG,
+        },
+      );
+
+      const formData = new FormData();
+      formData.append('image', {
+        uri: detectImage.uri,
+        name: 'camera-frame.jpg',
+        type: 'image/jpeg',
+      });
+
+      const response = await fetch(`${API_BASE_URL}/detect-frame`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const objects = Array.isArray(payload.objects) ? payload.objects : [];
+
+      if (scanActiveRef.current) {
+        setDetectedObjects(objects);
+        setLatestDetectImageUri(detectImage.uri);
+        setDetectedImageSize({
+          width: payload.image_width || detectImage.width || photo.width || 0,
+          height: payload.image_height || detectImage.height || photo.height || 0,
+        });
+        setCameraStatus(
+          objects.length === 0
+            ? 'Dang quet lien tuc. Chua tim thay vat the.'
+            : `Dang quet lien tuc. YOLO detect ${objects.length} vat the.`,
+        );
+      }
+    } catch (error) {
+      if (scanActiveRef.current) {
+        setDetectedObjects([]);
+        setDetectedImageSize(null);
+        setLatestDetectImageUri(null);
+        setCameraStatus(`Loi detect: ${error.message}`);
+      }
+    } finally {
+      detectingRef.current = false;
+      setIsDetecting(false);
+    }
+  };
+
+  const toggleScanning = () => {
+    if (scanActiveRef.current) {
+      scanActiveRef.current = false;
+      setIsScanning(false);
+      setIsDetecting(false);
+      clearObjectState();
+      setCameraStatus('Da dung quet vat the.');
+      return;
+    }
+
+    scanActiveRef.current = true;
+    setIsScanning(true);
+    clearObjectState();
+    setCameraStatus('Dang quet lien tuc...');
+  };
+
+  const selectDetectedObject = (object) => {
+    if (!latestDetectImageUri || !object?.bbox) {
+      setCameraStatus('Chua co frame detect hop le de chon vat the.');
+      return;
+    }
+
+    setSelectedObject(object);
+    setSelectedFrameUri(latestDetectImageUri);
+    setSegmentResult(null);
+    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de mask/crop.`);
+  };
+
+  const reconstructSelectedObject = async () => {
+    if (!selectedObject?.bbox || !selectedFrameUri) {
+      setCameraStatus('Hay cham vao bbox vat the truoc khi Tai tao.');
+      return;
+    }
+
+    setIsSegmenting(true);
+    setCameraStatus('Dang mask/crop vat the da chon...');
+
+    try {
+      const formData = new FormData();
+      formData.append('image', {
+        uri: selectedFrameUri,
+        name: 'selected-object-frame.jpg',
+        type: 'image/jpeg',
+      });
+      formData.append('bbox_x', String(selectedObject.bbox.x));
+      formData.append('bbox_y', String(selectedObject.bbox.y));
+      formData.append('bbox_width', String(selectedObject.bbox.width));
+      formData.append('bbox_height', String(selectedObject.bbox.height));
+
+      const response = await fetch(`${API_BASE_URL}/segment-object`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      setSegmentResult(payload);
+      setCameraStatus(`Da tao mask/crop cho ${payload.selected?.label || selectedObject.label}.`);
+    } catch (error) {
+      setSegmentResult(null);
+      setCameraStatus(`Loi mask/crop: ${error.message}`);
+    } finally {
+      setIsSegmenting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (screen !== 'camera' || !isScanning) {
+      return undefined;
+    }
+
+    let timer = null;
+    let cancelled = false;
+
+    const runLoop = async () => {
+      if (cancelled || !scanActiveRef.current) {
+        return;
+      }
+
+      await scanCurrentFrame();
+
+      if (!cancelled && scanActiveRef.current) {
+        timer = setTimeout(runLoop, DETECT_COOLDOWN_MS);
+      }
+    };
+
+    runLoop();
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [screen, isScanning]);
+
+  const mapDetectionBox = (object) => {
+    if (!detectedImageSize || !cameraLayout.width || !cameraLayout.height || !object?.bbox) {
+      return null;
+    }
+
+    const scale = Math.max(
+      cameraLayout.width / detectedImageSize.width,
+      cameraLayout.height / detectedImageSize.height,
+    );
+    const renderedWidth = detectedImageSize.width * scale;
+    const renderedHeight = detectedImageSize.height * scale;
+    const offsetX = (cameraLayout.width - renderedWidth) / 2;
+    const offsetY = (cameraLayout.height - renderedHeight) / 2;
+    const left = object.bbox.x * scale + offsetX;
+    const top = object.bbox.y * scale + offsetY;
+    const width = object.bbox.width * scale;
+    const height = object.bbox.height * scale;
+
+    if (width <= 1 || height <= 1) {
+      return null;
+    }
+
+    return { left, top, width, height };
+  };
+
+  const renderDetectionBox = (object) => {
+    const box = mapDetectionBox(object);
+    if (!box) {
+      return null;
+    }
+
+    const confidence = Math.round((object.confidence || 0) * 100);
+    const isSelected = selectedObject?.id === object.id;
+    return (
+      <Pressable
+        key={object.id}
+        style={[styles.detectionBox, isSelected && styles.selectedDetectionBox, box]}
+        onPress={() => selectDetectedObject(object)}
+      >
+        <View style={styles.detectionLabel}>
+          <Text style={styles.detectionLabelText}>
+            {object.label} {confidence}%
+          </Text>
+        </View>
+      </Pressable>
+    );
+  };
+
+  if (screen === 'camera') {
+    return (
+      <View
+        style={styles.cameraScreen}
+        onLayout={(event) => setCameraLayout(event.nativeEvent.layout)}
+      >
+        <CameraView
+          ref={cameraRef}
+          animateShutter={false}
+          style={StyleSheet.absoluteFill}
+          facing="back"
+        />
+        <View style={styles.cameraShade} />
+        <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+          {isScanning && detectedObjects.map(renderDetectionBox)}
+        </View>
+        <SafeAreaView pointerEvents="box-none" style={styles.cameraOverlay}>
+          <View style={styles.cameraTopBar}>
+            <Pressable
+              style={styles.backButton}
+              onPress={() => {
+                scanActiveRef.current = false;
+                detectingRef.current = false;
+                setIsScanning(false);
+                setIsDetecting(false);
+                setIsSegmenting(false);
+                clearObjectState();
+                setScreen('intro');
+              }}
+            >
+              <Text style={styles.backButtonText}>Trở lại</Text>
+            </Pressable>
+            <View style={styles.liveBadge}>
+              <View style={styles.liveDot} />
+              <Text style={styles.liveBadgeText}>Camera</Text>
+            </View>
+          </View>
+
+          <View style={styles.scanFrame}>
+            <View style={[styles.corner, styles.cornerTopLeft]} />
+            <View style={[styles.corner, styles.cornerTopRight]} />
+            <View style={[styles.corner, styles.cornerBottomLeft]} />
+            <View style={[styles.corner, styles.cornerBottomRight]} />
+          </View>
+
+          <View style={styles.cameraPanel}>
+            <Text style={styles.panelTitle}>Đưa vật thể vào khung</Text>
+            <Text style={styles.panelText}>{cameraStatus}</Text>
+            {selectedObject && (
+              <Text style={styles.selectedText}>
+                Da chon: {selectedObject.label} {Math.round((selectedObject.confidence || 0) * 100)}%
+              </Text>
+            )}
+            {segmentResult?.files?.masked_crop && (
+              <View style={styles.segmentPreview}>
+                <Image
+                  source={{ uri: getServerFileUrl(segmentResult.files.masked_crop) }}
+                  style={styles.segmentPreviewImage}
+                />
+                <Text style={styles.segmentPreviewText}>Masked crop san sang cho buoc 3D.</Text>
+              </View>
+            )}
+            <View style={styles.actionRow}>
+              <Pressable
+                style={[
+                  styles.cameraAction,
+                  styles.secondaryAction,
+                  isScanning && styles.scanningAction,
+                ]}
+                onPress={toggleScanning}
+              >
+                <Text style={styles.secondaryActionText}>
+                  {isScanning ? 'Dừng quét' : 'Quét vật thể'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.cameraAction,
+                  styles.primaryAction,
+                  (!selectedObject || isSegmenting) && styles.disabledCameraAction,
+                ]}
+                disabled={!selectedObject || isSegmenting}
+                onPress={() => showPlaceholder('Tái tạo 3D')}
+              >
+                <Text style={styles.primaryActionText}>
+                  {isSegmenting ? 'Dang xu ly' : 'Tái tạo'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </SafeAreaView>
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
+  if (screen === 'permission') {
+    return (
+      <SafeAreaView style={styles.permissionScreen}>
+        <View style={styles.permissionCard}>
+          <Text style={styles.permissionTitle}>Cần quyền camera</Text>
+          <Text style={styles.permissionText}>
+            Ứng dụng chỉ cần quyền camera để mở màn hình quét. Phần AI scan và tái tạo
+            chưa được tích hợp trong bản này.
+          </Text>
+          <Pressable style={styles.primaryButton} onPress={openCamera}>
+            <Text style={styles.primaryButtonText}>Cho phép camera</Text>
+          </Pressable>
+          <Pressable style={styles.ghostButton} onPress={() => setScreen('intro')}>
+            <Text style={styles.ghostButtonText}>Về giới thiệu</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.introScreen}>
+      <View style={styles.introContent}>
+        <View style={styles.brandRow}>
+          <Image source={require('./assets/icon.png')} style={styles.logo} />
+          <View>
+            <Text style={styles.eyebrow}>AI 3D Reconstruction</Text>
+            <Text style={styles.brandName}>Recon Mobile</Text>
+          </View>
+        </View>
+
+        <View style={styles.heroBlock}>
+          <Text style={styles.title}>Quét vật thể và chuẩn bị tái tạo mô hình 3D</Text>
+          <Text style={styles.subtitle}>
+            Ứng dụng mobile dùng để mở camera, định hướng người dùng quét object và
+            gửi dữ liệu cho pipeline AI ở backend trong các bước tiếp theo.
+          </Text>
+        </View>
+
+        <View style={styles.workflowPanel}>
+          <Text style={styles.sectionTitle}>Luồng xử lý dự kiến</Text>
+          {workflowSteps.map((step, index) => (
+            <View key={step} style={styles.stepRow}>
+              <View style={styles.stepIndex}>
+                <Text style={styles.stepIndexText}>{index + 1}</Text>
+              </View>
+              <Text style={styles.stepText}>{step}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.noteBox}>
+          <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
+          <Text style={styles.noteText}>
+            Đã setup giao diện và chức năng mở camera. Các nút quét vật thể và tái
+            tạo đang là placeholder cho bước tích hợp AI sau.
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.bottomBar}>
+        <Pressable
+          style={[styles.primaryButton, !permission && styles.disabledButton]}
+          onPress={openCamera}
+          disabled={!permission}
+        >
+          <Text style={styles.primaryButtonText}>
+            {!permission ? 'Đang chuẩn bị camera...' : 'Bắt đầu'}
+          </Text>
+        </Pressable>
+      </View>
+      <StatusBar style="dark" />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  introScreen: {
+    flex: 1,
+    backgroundColor: '#F7F8FA',
+  },
+  introContent: {
+    flex: 1,
+    paddingHorizontal: 22,
+    paddingTop: 26,
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  logo: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+  },
+  eyebrow: {
+    color: '#667085',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  brandName: {
+    color: '#101828',
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  heroBlock: {
+    marginTop: 42,
+  },
+  title: {
+    color: '#101828',
+    fontSize: 31,
+    lineHeight: 38,
+    fontWeight: '800',
+  },
+  subtitle: {
+    color: '#475467',
+    fontSize: 16,
+    lineHeight: 24,
+    marginTop: 14,
+  },
+  workflowPanel: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E4E7EC',
+    marginTop: 28,
+    padding: 16,
+  },
+  sectionTitle: {
+    color: '#101828',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 42,
+  },
+  stepIndex: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E6F0FF',
+  },
+  stepIndexText: {
+    color: '#155EEF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  stepText: {
+    flex: 1,
+    color: '#344054',
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  noteBox: {
+    backgroundColor: '#EEF4FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#C7D7FE',
+    marginTop: 16,
+    padding: 14,
+  },
+  noteTitle: {
+    color: '#1849A9',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  noteText: {
+    color: '#344054',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  bottomBar: {
+    paddingHorizontal: 22,
+    paddingBottom: 24,
+    paddingTop: 14,
+    backgroundColor: '#F7F8FA',
+  },
+  primaryButton: {
+    minHeight: 54,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#155EEF',
+  },
+  disabledButton: {
+    backgroundColor: '#98A2B3',
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  ghostButton: {
+    minHeight: 48,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  ghostButtonText: {
+    color: '#155EEF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  permissionScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 22,
+    backgroundColor: '#F7F8FA',
+  },
+  permissionCard: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E4E7EC',
+    padding: 20,
+  },
+  permissionTitle: {
+    color: '#101828',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  permissionText: {
+    color: '#475467',
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 18,
+    marginTop: 10,
+  },
+  cameraScreen: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  cameraShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.16)',
+  },
+  detectionBox: {
+    position: 'absolute',
+    borderWidth: 3,
+    borderColor: '#A3E635',
+    backgroundColor: 'rgba(163, 230, 53, 0.14)',
+  },
+  selectedDetectionBox: {
+    borderColor: '#155EEF',
+    backgroundColor: 'rgba(21, 94, 239, 0.18)',
+  },
+  detectionLabel: {
+    position: 'absolute',
+    left: -3,
+    top: -30,
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    backgroundColor: '#A3E635',
+  },
+  detectionLabelText: {
+    color: '#1A2E05',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  cameraOverlay: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: 18,
+  },
+  cameraTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  backButton: {
+    minHeight: 40,
+    borderRadius: 8,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+  },
+  backButtonText: {
+    color: '#101828',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 40,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(16, 24, 40, 0.74)',
+  },
+  liveDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: '#12B76A',
+  },
+  liveBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  scanFrame: {
+    alignSelf: 'center',
+    width: '82%',
+    aspectRatio: 0.72,
+    position: 'relative',
+  },
+  corner: {
+    position: 'absolute',
+    width: 42,
+    height: 42,
+    borderColor: '#FFFFFF',
+  },
+  cornerTopLeft: {
+    left: 0,
+    top: 0,
+    borderLeftWidth: 4,
+    borderTopWidth: 4,
+  },
+  cornerTopRight: {
+    right: 0,
+    top: 0,
+    borderRightWidth: 4,
+    borderTopWidth: 4,
+  },
+  cornerBottomLeft: {
+    left: 0,
+    bottom: 0,
+    borderLeftWidth: 4,
+    borderBottomWidth: 4,
+  },
+  cornerBottomRight: {
+    right: 0,
+    bottom: 0,
+    borderRightWidth: 4,
+    borderBottomWidth: 4,
+  },
+  cameraPanel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 8,
+    padding: 16,
+  },
+  panelTitle: {
+    color: '#101828',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  panelText: {
+    color: '#475467',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+  },
+  selectedText: {
+    color: '#155EEF',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  segmentPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+  },
+  segmentPreviewImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#D0D5DD',
+    backgroundColor: '#FFFFFF',
+  },
+  segmentPreviewText: {
+    flex: 1,
+    color: '#344054',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  cameraAction: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryAction: {
+    borderWidth: 1,
+    borderColor: '#D0D5DD',
+    backgroundColor: '#FFFFFF',
+  },
+  scanningAction: {
+    borderColor: '#A3E635',
+    backgroundColor: '#ECFCCB',
+  },
+  disabledCameraAction: {
+    opacity: 0.65,
+  },
+  secondaryActionText: {
+    color: '#344054',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  primaryAction: {
+    backgroundColor: '#155EEF',
+  },
+  primaryActionText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+});

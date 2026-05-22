@@ -111,17 +111,16 @@ Dataset nay doc truc tiep du lieu da xu ly tu `data/processed`, nen training kho
 Model baseline nam trong:
 
 ```text
-project/src/models/transformer_pointcloud.py
+project/src/models/object_reconstruction.py
 ```
 
 Kien truc baseline:
 
 1. Anh dau vao `[3, 224, 224]`.
-2. Patch embedding bang Conv2D.
-3. Transformer encoder hoc dac trung anh.
-4. Decoder MLP du doan point cloud.
-5. Loss chinh: Chamfer Distance.
-6. Metric danh gia: Chamfer Distance va F-score.
+2. ResNet encoder hoc dac trung anh.
+3. Decoder MLP du doan point cloud.
+4. Loss chinh: Chamfer Distance.
+5. Metric danh gia: Chamfer Distance va F-score.
 
 Training pipeline nam trong:
 
@@ -142,7 +141,7 @@ Lenh training baseline da chay:
 ```bash
 cd project
 set KMP_DUPLICATE_LIB_OK=TRUE
-python -m src.training.training_pipeline --dataset-mode processed --categories chair --max-samples 256 --epochs 5 --batch-size 4 --output-dir results/baseline
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --epochs 5 --batch-size 2 --output-dir results/chair_resnet_baseline
 ```
 
 Ghi chu: `KMP_DUPLICATE_LIB_OK=TRUE` duoc dung tam thoi do moi truong Anaconda tren Windows gap xung dot OpenMP. Ve lau dai nen tao virtual environment sach cho PyTorch.
@@ -152,7 +151,7 @@ Ghi chu: `KMP_DUPLICATE_LIB_OK=TRUE` duoc dung tam thoi do moi truong Anaconda t
 Quy trinh baseline da duoc bo sung de ghi day du ket qua vao dung thu muc:
 
 ```text
-project/results/baseline/
+project/results/chair_resnet_baseline/
   logs/
     baseline.log
   metrics/
@@ -161,14 +160,14 @@ project/results/baseline/
     baseline_summary.json
     training_curves.png
     checkpoints/
-      transformer_pointcloud_net.pt
+      resnet_pointcloud_net.pt
 ```
 
 Y nghia tung phan:
 
 - `logs/baseline.log`: log qua trinh train, cau hinh dataset, so sample train/validation va metric theo epoch.
 - `metrics/training_metrics.csv`: bang metric theo epoch dung de ve bieu do va so sanh cac lan chay.
-- `outputs/checkpoints/transformer_pointcloud_net.pt`: checkpoint model baseline.
+- `outputs/checkpoints/resnet_pointcloud_net.pt`: checkpoint model baseline.
 - `outputs/baseline_summary.json`: tom tat cau hinh chay baseline va duong dan artifact.
 - `outputs/training_curves.png`: bieu do train loss, validation Chamfer Distance va validation F-score.
 
@@ -198,8 +197,8 @@ Da hoan thanh:
 - Anh va mask da xu ly.
 - Point cloud `.npy`.
 - Processed dataloader.
-- Transformer point cloud baseline.
-- Training baseline, log, metric, bieu do, summary va checkpoint trong `results/baseline`.
+- ResNet encoder + point cloud decoder baseline.
+- Training baseline, log, metric, bieu do, summary va checkpoint trong `results/chair_resnet_baseline`.
 
 Can cai thien tiep:
 
