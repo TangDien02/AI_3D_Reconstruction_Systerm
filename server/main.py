@@ -27,7 +27,7 @@ YOLO_WEIGHTS = SERVER_DIR / "weights" / "yolo26n-seg.pt"
 DETECTION_CONFIDENCE = 0.60
 DETECTION_IMAGE_SIZE = 416
 DETECTION_MAX_OBJECTS = 8
-BASELINE_CHECKPOINT = PROJECT_DIR / "results" / "chair_baseline" / "outputs" / "checkpoints" / "best_model.pt"
+BASELINE_CHECKPOINT = PROJECT_DIR / "results" / "chair_resnet_baseline" / "outputs" / "checkpoints" / "best_model.pt"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SEGMENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

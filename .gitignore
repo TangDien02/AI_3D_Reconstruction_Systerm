@@ -44,6 +44,7 @@ server/uploads/
 server/models/
 server/smoke_outputs/
 server/segment_outputs/
+project/results/
 project/results/training/
 project/results/inference/
 project/results/week2_eda/
@@ -64,6 +65,7 @@ project/data/processed/points/
 project/results/baseline/
 project/results/eda/
 project/results/logs/
+project/results/metrics/
 project/results/**/outputs/checkpoints/*.pt
 project/results/**/outputs/checkpoints/*.pth
 

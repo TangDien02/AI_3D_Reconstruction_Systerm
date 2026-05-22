@@ -15,12 +15,16 @@ def parse_args() -> argparse.Namespace:
         description="Run preprocessing, training, evaluation, and point-cloud comparison."
     )
     parser.add_argument("--category", default="chair")
-    parser.add_argument("--max-samples", type=int, default=256)
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--num-points", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--output-dir", default="results/chair_baseline")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
+    parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
+    parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--quick", action="store_true", help="Run a tiny smoke test: 8 samples, 1 epoch.")
     parser.add_argument("--overwrite", action="store_true")
@@ -103,10 +107,10 @@ def main() -> None:
             max_samples=args.max_samples,
             num_points=args.num_points,
             image_size=args.image_size,
-            patch_size=16,
-            embed_dim=256,
-            transformer_depth=4,
-            num_heads=8,
+            encoder_name=args.encoder_name,
+            feature_dim=args.feature_dim,
+            pretrained=args.pretrained,
+            freeze_encoder=args.freeze_encoder,
             batch_size=args.batch_size,
             epochs=args.epochs,
             lr=1e-4,

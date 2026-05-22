@@ -56,7 +56,13 @@ class ConvFeatureEncoder(nn.Module):
 class TorchvisionResNetEncoder(nn.Module):
     """Optional ResNet encoder. Requires torchvision, but does not make it a hard dependency."""
 
-    def __init__(self, name: str = "resnet18", pretrained: bool = True, feature_dim: int = 512):
+    def __init__(
+        self,
+        name: str = "resnet18",
+        pretrained: bool = True,
+        feature_dim: int = 512,
+        normalize_input: bool | None = None,
+    ):
         super().__init__()
         try:
             from torchvision import models
@@ -77,8 +83,21 @@ class TorchvisionResNetEncoder(nn.Module):
         self.backbone = backbone
         self.projection = nn.Identity() if in_features == feature_dim else nn.Linear(in_features, feature_dim)
         self.feature_dim = feature_dim
+        self.normalize_input = pretrained if normalize_input is None else normalize_input
+        self.register_buffer(
+            "image_mean",
+            torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "image_std",
+            torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
+        if self.normalize_input:
+            images = (images - self.image_mean) / self.image_std
         features = self.backbone(images)
         return self.projection(features)
 
@@ -98,7 +117,7 @@ class AdapterBlock(nn.Module):
 
 
 class MLPPointCloudDecoder(nn.Module):
-    def __init__(self, feature_dim: int, num_points: int = 512, hidden_dim: int = 1024):
+    def __init__(self, feature_dim: int, num_points: int = 2048, hidden_dim: int = 1024):
         super().__init__()
         self.num_points = num_points
         self.net = nn.Sequential(
@@ -146,7 +165,7 @@ class ObjectReconstructionNet(nn.Module):
         self,
         encoder: nn.Module,
         feature_dim: int = 256,
-        num_points: int = 512,
+        num_points: int = 2048,
         use_adapter: bool = False,
         adapter_bottleneck_dim: int = 64,
         use_domain_discriminator: bool = False,
@@ -185,15 +204,21 @@ def build_object_reconstruction_model(
     encoder_name: str = "conv",
     pretrained: bool = True,
     feature_dim: int = 256,
-    num_points: int = 512,
+    num_points: int = 2048,
     freeze_encoder: bool = True,
     use_adapter: bool = False,
     use_domain_discriminator: bool = False,
+    normalize_input: bool | None = None,
 ) -> ObjectReconstructionNet:
     if encoder_name == "conv":
         encoder = ConvFeatureEncoder(feature_dim=feature_dim)
     elif encoder_name.startswith("resnet"):
-        encoder = TorchvisionResNetEncoder(name=encoder_name, pretrained=pretrained, feature_dim=feature_dim)
+        encoder = TorchvisionResNetEncoder(
+            name=encoder_name,
+            pretrained=pretrained,
+            feature_dim=feature_dim,
+            normalize_input=normalize_input,
+        )
     else:
         raise ValueError(f"Unsupported encoder_name: {encoder_name}")
 

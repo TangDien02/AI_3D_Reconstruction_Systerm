@@ -12,28 +12,8 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.data.dataloader import ProcessedPix3DDataset
-from src.inference.baseline_inference import select_device
+from src.inference.baseline_inference import load_baseline_model, model_points, select_device
 from src.metrics.losses import chamfer_distance, f_score
-from src.models.transformer_pointcloud import TransformerPointCloudNet
-
-
-def load_checkpoint_model(
-    checkpoint_path: str | Path,
-    device: torch.device,
-) -> tuple[TransformerPointCloudNet, dict]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    model = TransformerPointCloudNet(
-        num_points=int(checkpoint.get("num_points", 512)),
-        image_size=int(checkpoint.get("image_size", 224)),
-        patch_size=int(checkpoint.get("patch_size", 16)),
-        embed_dim=int(checkpoint.get("embed_dim", 256)),
-        depth=int(checkpoint.get("transformer_depth", 4)),
-        num_heads=int(checkpoint.get("num_heads", 8)),
-    )
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(device)
-    model.eval()
-    return model, checkpoint
 
 
 def sample_points(points: np.ndarray, max_points: int) -> np.ndarray:
@@ -116,7 +96,7 @@ def compare_sample(args: argparse.Namespace) -> None:
     if not output_dir.is_absolute():
         output_dir = PROJECT_DIR / output_dir
 
-    model, checkpoint = load_checkpoint_model(checkpoint_path, device)
+    model, checkpoint = load_baseline_model(checkpoint_path, device)
 
     categories = args.categories
     if categories is None:
@@ -141,7 +121,7 @@ def compare_sample(args: argparse.Namespace) -> None:
     gt_points = sample["points_gt"].unsqueeze(0).to(device)
 
     with torch.no_grad():
-        pred_points = model(image)
+        pred_points = model_points(model, image)
         chamfer = chamfer_distance(pred_points, gt_points).item()
         fscore, precision, recall = f_score(pred_points, gt_points, threshold=args.f_threshold)
 
@@ -188,13 +168,13 @@ def compare_sample(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize predicted and ground-truth point clouds.")
-    parser.add_argument("--checkpoint", default="results/chair_baseline/outputs/checkpoints/best_model.pt")
+    parser.add_argument("--checkpoint", default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt")
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument("--split", default="val", choices=["train", "val", "test"])
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--output-dir", default="results/chair_baseline/outputs/comparison")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline/outputs/comparison")
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--max-plot-points", type=int, default=2048)
     parser.add_argument("--device", default=None, help="Use cuda, cpu, or leave empty for auto.")

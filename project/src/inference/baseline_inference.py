@@ -13,7 +13,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from src.models.transformer_pointcloud import TransformerPointCloudNet
+from src.models.object_reconstruction import build_object_reconstruction_model
 from src.utils.pointcloud_io import save_pointcloud_npy, save_pointcloud_ply
 from src.utils.visualization import plot_point_cloud
 
@@ -47,16 +47,31 @@ def select_device(device_name: str | None = None) -> torch.device:
         return torch.device("cpu")
 
 
-def load_baseline_model(checkpoint_path: str | Path, device: torch.device) -> tuple[TransformerPointCloudNet, dict]:
+def model_points(model: torch.nn.Module, images: torch.Tensor) -> torch.Tensor:
+    output = model(images)
+    return output.points if hasattr(output, "points") else output
+
+
+def load_baseline_model(checkpoint_path: str | Path, device: torch.device) -> tuple[torch.nn.Module, dict]:
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    model = TransformerPointCloudNet(
-        num_points=int(checkpoint.get("num_points", 512)),
-        image_size=int(checkpoint.get("image_size", 224)),
-        patch_size=int(checkpoint.get("patch_size", 16)),
-        embed_dim=int(checkpoint.get("embed_dim", 256)),
-        depth=int(checkpoint.get("transformer_depth", 4)),
-        num_heads=int(checkpoint.get("num_heads", 8)),
+    checkpoint_model_type = checkpoint.get("model_type")
+    if checkpoint_model_type not in {None, "resnet_pointcloud"}:
+        raise RuntimeError(
+            f"Unsupported checkpoint model_type={checkpoint_model_type!r}; expected resnet_pointcloud."
+        )
+    if checkpoint_model_type is None and any(
+        key in checkpoint for key in ("patch_size", "embed_dim", "transformer_depth", "num_heads")
+    ):
+        raise RuntimeError("This looks like an old Transformer checkpoint. Train a new ResNet checkpoint first.")
+
+    model = build_object_reconstruction_model(
+        encoder_name=str(checkpoint.get("encoder_name", "resnet18")),
+        pretrained=False,
+        normalize_input=bool(checkpoint.get("pretrained", False)),
+        feature_dim=int(checkpoint.get("feature_dim", 512)),
+        num_points=int(checkpoint.get("num_points", 2048)),
+        freeze_encoder=bool(checkpoint.get("freeze_encoder", True)),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -73,7 +88,7 @@ def predict_pointcloud(
     model, checkpoint = load_baseline_model(checkpoint_path, device=device)
     image_size = int(checkpoint.get("image_size", 224))
     image_tensor = load_image_tensor(image_path, image_size=image_size).to(device)
-    points = model(image_tensor).squeeze(0).cpu().numpy().astype(np.float32)
+    points = model_points(model, image_tensor).squeeze(0).cpu().numpy().astype(np.float32)
     return points, checkpoint
 
 
@@ -82,10 +97,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=True, help="Input RGB image path.")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_baseline/outputs/checkpoints/best_model.pt",
+        default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt",
         help="Baseline checkpoint path relative to project/ or absolute.",
     )
-    parser.add_argument("--output-dir", default="results/chair_baseline/outputs/inference")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline/outputs/inference")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--name", default=None, help="Optional output basename.")
     parser.add_argument("--no-plot", action="store_true")

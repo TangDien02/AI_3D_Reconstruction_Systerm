@@ -19,12 +19,12 @@ from torch.utils.data import DataLoader, random_split
 # 2. Voi data processed, dung truc tiep splits/train.csv va splits/val.csv.
 #    Voi data raw, fallback ve random split train/validation.
 # 3. Dung DataLoader tao batch anh va point cloud ground truth.
-# 4. Dua anh vao TransformerPointCloudNet de du doan point cloud.
+# 4. Dua anh vao ResNet encoder + point cloud decoder de du doan point cloud.
 # 5. Tinh Chamfer Distance giua point cloud du doan va ground truth.
 # 6. Backpropagation va cap nhat trong so model bang Adam.
 # 7. Danh gia bang Chamfer Distance va F-score, sau do luu metric/checkpoint.
 #
-# Hien tai day la skeleton de chuan bi cho tuan 3, chua phai model toi uu.
+# Pipeline chinh dung object-level ResNet reconstruction baseline.
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
@@ -32,7 +32,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.data.dataloader import Pix3DDataset, ProcessedPix3DDataset
 from src.metrics.losses import chamfer_distance, f_score
-from src.models.transformer_pointcloud import TransformerPointCloudNet
+from src.models.object_reconstruction import build_object_reconstruction_model
 
 
 def setup_baseline_logger(log_dir: Path) -> logging.Logger:
@@ -109,6 +109,11 @@ def save_training_curves(metrics_path: Path, output_path: Path) -> Path | None:
     return output_path
 
 
+def model_points(model, images: torch.Tensor) -> torch.Tensor:
+    output = model(images)
+    return output.points if hasattr(output, "points") else output
+
+
 def train_one_epoch(model, dataloader, optimizer, device):
     model.train()
     total_loss = 0.0
@@ -117,7 +122,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
         images = batch["image"].to(device)
         points_gt = batch["points_gt"].to(device)
 
-        points_pred = model(images)
+        points_pred = model_points(model, images)
         loss = chamfer_distance(points_pred, points_gt)
 
         optimizer.zero_grad()
@@ -139,7 +144,7 @@ def evaluate(model, dataloader, device, threshold):
         images = batch["image"].to(device)
         points_gt = batch["points_gt"].to(device)
 
-        points_pred = model(images)
+        points_pred = model_points(model, images)
         total_cd += chamfer_distance(points_pred, points_gt).item()
         total_f += f_score(points_pred, points_gt, threshold=threshold)[0]
 
@@ -154,7 +159,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train single-view 3D point cloud baseline")
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--processed-dir", default="data/processed")
-    parser.add_argument("--output-dir", default="results/chair_baseline")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--dataset-mode", choices=["raw", "processed"], default="processed")
     parser.add_argument(
         "--split",
@@ -176,13 +181,13 @@ def parse_args():
         default=None,
         help="Limit validation samples. Defaults to --max-samples for processed smoke tests.",
     )
-    parser.add_argument("--num-points", type=int, default=512)
+    parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--patch-size", type=int, default=16)
-    parser.add_argument("--embed-dim", type=int, default=256)
-    parser.add_argument("--transformer-depth", type=int, default=4)
-    parser.add_argument("--num-heads", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
+    parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--f-threshold", type=float, default=0.05)
@@ -244,13 +249,14 @@ def build_checkpoint(
 ):
     checkpoint = {
         "model_state_dict": model.state_dict(),
+        "model_type": "resnet_pointcloud",
         "categories": args.categories,
         "num_points": args.num_points,
         "image_size": args.image_size,
-        "patch_size": args.patch_size,
-        "embed_dim": args.embed_dim,
-        "transformer_depth": args.transformer_depth,
-        "num_heads": args.num_heads,
+        "encoder_name": args.encoder_name,
+        "feature_dim": args.feature_dim,
+        "pretrained": args.pretrained,
+        "freeze_encoder": args.freeze_encoder,
         "epoch": epoch,
         "best_metric": best_metric,
         "best_score": best_score,
@@ -308,17 +314,21 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
             return {categories}
         return set(categories)
 
-    architecture_keys = [
-        "num_points",
-        "image_size",
-        "patch_size",
-        "embed_dim",
-        "transformer_depth",
-        "num_heads",
-    ]
     mismatches = []
-    for key in architecture_keys:
+    checkpoint_model_type = checkpoint.get("model_type")
+    if checkpoint_model_type is not None and checkpoint_model_type != "resnet_pointcloud":
+        mismatches.append(f"model_type: checkpoint={checkpoint_model_type} current=resnet_pointcloud")
+    if checkpoint_model_type is None and any(
+        key in checkpoint for key in ("patch_size", "embed_dim", "transformer_depth", "num_heads")
+    ):
+        mismatches.append("model_type: checkpoint appears to be an old Transformer checkpoint")
+
+    for key in ["num_points", "image_size", "feature_dim"]:
         if key in checkpoint and int(checkpoint[key]) != int(getattr(args, key)):
+            mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
+
+    for key in ["encoder_name", "pretrained", "freeze_encoder"]:
+        if key in checkpoint and checkpoint[key] != getattr(args, key):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
 
     checkpoint_categories = checkpoint.get("categories")
@@ -555,6 +565,14 @@ def run_training(args):
         args.comparison_index = 0
     if not hasattr(args, "max_plot_points"):
         args.max_plot_points = 2048
+    if not hasattr(args, "encoder_name"):
+        args.encoder_name = "resnet18"
+    if not hasattr(args, "feature_dim"):
+        args.feature_dim = 512
+    if not hasattr(args, "pretrained"):
+        args.pretrained = True
+    if not hasattr(args, "freeze_encoder"):
+        args.freeze_encoder = True
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -631,14 +649,22 @@ def run_training(args):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     logger.info("Train samples: %s | Val samples: %s", train_size, val_size)
 
-    model = TransformerPointCloudNet(
+    model = build_object_reconstruction_model(
+        encoder_name=args.encoder_name,
+        pretrained=args.pretrained,
+        feature_dim=args.feature_dim,
         num_points=args.num_points,
-        image_size=args.image_size,
-        patch_size=args.patch_size,
-        embed_dim=args.embed_dim,
-        depth=args.transformer_depth,
-        num_heads=args.num_heads,
+        freeze_encoder=args.freeze_encoder,
     ).to(device)
+    logger.info(
+        "Model ready: resnet_pointcloud encoder=%s pretrained=%s freeze_encoder=%s feature_dim=%s num_points=%s trainable_params=%s",
+        args.encoder_name,
+        args.pretrained,
+        args.freeze_encoder,
+        args.feature_dim,
+        args.num_points,
+        model.trainable_parameter_count(),
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     metrics_path = metric_dir / "training_metrics.csv"
@@ -732,7 +758,7 @@ def run_training(args):
             print(message)
             logger.info(message)
 
-    checkpoint_path = checkpoint_dir / "transformer_pointcloud_net.pt"
+    checkpoint_path = checkpoint_dir / "resnet_pointcloud_net.pt"
     torch.save(
         build_checkpoint(
             model=model,
@@ -769,6 +795,11 @@ def run_training(args):
         "val_samples": val_size,
         "num_points": args.num_points,
         "image_size": args.image_size,
+        "model_type": "resnet_pointcloud",
+        "encoder_name": args.encoder_name,
+        "feature_dim": args.feature_dim,
+        "pretrained": args.pretrained,
+        "freeze_encoder": args.freeze_encoder,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "start_epoch": start_epoch,

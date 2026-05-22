@@ -8,7 +8,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 def get_logger(name="3D_Recon", log_dir=None, log_file="workflow.log"):
     if log_dir is None:
-        log_dir = PROJECT_DIR / "results" / "chair_baseline" / "logs"
+        log_dir = PROJECT_DIR / "results" / "chair_resnet_baseline" / "logs"
     else:
         log_dir = Path(log_dir)
         if not log_dir.is_absolute():

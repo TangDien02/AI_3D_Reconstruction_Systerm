@@ -17,11 +17,9 @@ PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 ARCH_KEYS = [
     "num_points",
     "image_size",
-    "patch_size",
-    "embed_dim",
-    "transformer_depth",
-    "num_heads",
+    "feature_dim",
 ]
+CURRENT_MODEL_TYPE = "resnet_pointcloud"
 
 
 def project_path(path_text: str) -> Path:
@@ -91,19 +89,19 @@ class TrainingConfigGui(tk.Tk):
     def create_variables(self) -> None:
         default_category = "chair" if "chair" in self.categories else (self.categories[0] if self.categories else "")
         self.category_var = tk.StringVar(value=default_category)
-        self.output_dir_var = tk.StringVar(value="results/chair_baseline")
+        self.output_dir_var = tk.StringVar(value="results/chair_resnet_baseline")
         self.resume_mode_var = tk.StringVar(value="auto_best")
         self.custom_checkpoint_var = tk.StringVar(value="")
-        self.max_samples_var = tk.StringVar(value="256")
+        self.max_samples_var = tk.StringVar(value="")
         self.epochs_var = tk.StringVar(value="5")
-        self.batch_size_var = tk.StringVar(value="4")
+        self.batch_size_var = tk.StringVar(value="2")
         self.lr_var = tk.StringVar(value="0.0001")
-        self.num_points_var = tk.StringVar(value="512")
+        self.num_points_var = tk.StringVar(value="2048")
         self.image_size_var = tk.StringVar(value="224")
-        self.patch_size_var = tk.StringVar(value="16")
-        self.embed_dim_var = tk.StringVar(value="256")
-        self.depth_var = tk.StringVar(value="4")
-        self.heads_var = tk.StringVar(value="8")
+        self.encoder_name_var = tk.StringVar(value="resnet18")
+        self.feature_dim_var = tk.StringVar(value="512")
+        self.pretrained_var = tk.BooleanVar(value=True)
+        self.freeze_encoder_var = tk.BooleanVar(value=True)
         self.best_metric_var = tk.StringVar(value="val_chamfer_distance")
         self.force_cpu_var = tk.BooleanVar(value=True)
 
@@ -224,23 +222,48 @@ class TrainingConfigGui(tk.Tk):
         arch_frame = ttk.LabelFrame(parent, text="Model architecture")
         arch_frame.pack(fill=tk.X, pady=(0, 10))
 
+        ttk.Label(arch_frame, text="Encoder").grid(row=0, column=0, sticky=tk.W, padx=8, pady=5)
+        encoder_combo = ttk.Combobox(
+            arch_frame,
+            textvariable=self.encoder_name_var,
+            values=["resnet18", "resnet50", "conv"],
+            state="readonly",
+            width=14,
+        )
+        encoder_combo.grid(row=0, column=1, sticky=tk.W, padx=8, pady=5)
+        encoder_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_encoder_change())
+
         arch_fields = [
             ("Num points", self.num_points_var),
             ("Image size", self.image_size_var),
-            ("Patch size", self.patch_size_var),
-            ("Embed dim", self.embed_dim_var),
-            ("Transformer depth", self.depth_var),
-            ("Num heads", self.heads_var),
+            ("Feature dim", self.feature_dim_var),
         ]
         for row, (label, variable) in enumerate(arch_fields):
-            ttk.Label(arch_frame, text=label).grid(row=row // 2, column=(row % 2) * 2, sticky=tk.W, padx=8, pady=5)
+            grid_row = (row + 2) // 2
+            ttk.Label(arch_frame, text=label).grid(row=grid_row, column=((row + 2) % 2) * 2, sticky=tk.W, padx=8, pady=5)
             ttk.Entry(arch_frame, textvariable=variable, width=12).grid(
-                row=row // 2,
-                column=(row % 2) * 2 + 1,
+                row=grid_row,
+                column=((row + 2) % 2) * 2 + 1,
                 sticky=tk.W,
                 padx=8,
                 pady=5,
             )
+        ttk.Checkbutton(arch_frame, text="Pretrained ImageNet", variable=self.pretrained_var).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky=tk.W,
+            padx=8,
+            pady=5,
+        )
+        ttk.Checkbutton(arch_frame, text="Freeze encoder", variable=self.freeze_encoder_var).grid(
+            row=3,
+            column=2,
+            columnspan=2,
+            sticky=tk.W,
+            padx=8,
+            pady=5,
+        )
 
     def build_resume_frame(self, parent: ttk.Frame) -> None:
         resume_frame = ttk.LabelFrame(parent, text="Checkpoint / resume")
@@ -250,7 +273,7 @@ class TrainingConfigGui(tk.Tk):
             ("Auto: dung best_model.pt neu co", "auto_best"),
             ("Train model moi", "fresh"),
             ("Bat buoc resume best_model.pt", "best"),
-            ("Resume transformer_pointcloud_net.pt", "last"),
+            ("Resume resnet_pointcloud_net.pt", "last"),
             ("Checkpoint tuy chon", "custom"),
         ]
         for row, (label, value) in enumerate(modes):
@@ -297,16 +320,23 @@ class TrainingConfigGui(tk.Tk):
         self.refresh_defaults_for_category()
         self.validate_config(show_dialog=False)
 
+    def on_encoder_change(self) -> None:
+        encoder_defaults = {"resnet18": "512", "resnet50": "2048", "conv": "256"}
+        self.feature_dim_var.set(encoder_defaults.get(self.encoder_name_var.get(), "512"))
+        self.validate_config(show_dialog=False)
+
     def refresh_defaults_for_category(self) -> None:
         category = self.category_var.get()
         if not category:
             return
         current = self.output_dir_var.get().strip()
-        default_like = {"", "results/baseline", "results/chair_baseline"} | {
+        default_like = {"", "results/baseline", "results/chair_baseline", "results/chair_resnet_baseline"} | {
             f"results/{cat}_baseline" for cat in self.categories
+        } | {
+            f"results/{cat}_resnet_baseline" for cat in self.categories
         }
         if current in default_like:
-            self.output_dir_var.set(f"results/{category}_baseline")
+            self.output_dir_var.set(f"results/{category}_resnet_baseline")
 
     def choose_output_dir(self) -> None:
         selected = filedialog.askdirectory(initialdir=PROJECT_DIR / "results")
@@ -333,10 +363,7 @@ class TrainingConfigGui(tk.Tk):
             "batch_size": self.batch_size_var,
             "num_points": self.num_points_var,
             "image_size": self.image_size_var,
-            "patch_size": self.patch_size_var,
-            "embed_dim": self.embed_dim_var,
-            "transformer_depth": self.depth_var,
-            "num_heads": self.heads_var,
+            "feature_dim": self.feature_dim_var,
         }
         for key, variable in int_fields.items():
             text = variable.get().strip()
@@ -369,7 +396,7 @@ class TrainingConfigGui(tk.Tk):
         if mode in {"auto_best", "best"}:
             return output_dir / "outputs" / "checkpoints" / "best_model.pt", mode
         if mode == "last":
-            return output_dir / "outputs" / "checkpoints" / "transformer_pointcloud_net.pt", mode
+            return output_dir / "outputs" / "checkpoints" / "resnet_pointcloud_net.pt", mode
         return project_path(self.custom_checkpoint_var.get()), mode
 
     def load_checkpoint(self, checkpoint_path: Path) -> tuple[dict | None, str | None]:
@@ -431,12 +458,31 @@ class TrainingConfigGui(tk.Tk):
             elif checkpoint:
                 infos.append(f"Checkpoint: {as_project_relative(checkpoint_path)}")
                 infos.append(f"Checkpoint epoch: {checkpoint.get('epoch')}; best_score: {checkpoint.get('best_score')}")
+                checkpoint_model_type = checkpoint.get("model_type")
+                if checkpoint_model_type not in {None, CURRENT_MODEL_TYPE}:
+                    errors.append(
+                        f"Sai model_type: checkpoint={checkpoint_model_type} current={CURRENT_MODEL_TYPE}."
+                    )
+                if checkpoint_model_type is None and any(
+                    key in checkpoint for key in ("patch_size", "embed_dim", "transformer_depth", "num_heads")
+                ):
+                    errors.append("Checkpoint nay la Transformer cu; hay train ResNet checkpoint moi.")
                 checkpoint_categories = normalize_categories(checkpoint.get("categories"))
                 current_categories = {category}
                 if checkpoint_categories is not None and checkpoint_categories != current_categories:
                     errors.append(
                         f"Sai category: checkpoint={sorted(checkpoint_categories)} current={sorted(current_categories)}."
                     )
+                if checkpoint.get("encoder_name") is not None and checkpoint.get("encoder_name") != self.encoder_name_var.get():
+                    errors.append(
+                        f"Sai encoder_name: checkpoint={checkpoint.get('encoder_name')} current={self.encoder_name_var.get()}."
+                    )
+                for key, variable in {
+                    "pretrained": self.pretrained_var,
+                    "freeze_encoder": self.freeze_encoder_var,
+                }.items():
+                    if checkpoint.get(key) is not None and bool(checkpoint.get(key)) != bool(variable.get()):
+                        errors.append(f"Sai {key}: checkpoint={checkpoint.get(key)} current={variable.get()}.")
                 for key in ARCH_KEYS:
                     current_value = numeric.get(key)
                     checkpoint_value = checkpoint.get(key)
@@ -507,19 +553,17 @@ class TrainingConfigGui(tk.Tk):
             self.num_points_var.get().strip(),
             "--image-size",
             self.image_size_var.get().strip(),
-            "--patch-size",
-            self.patch_size_var.get().strip(),
-            "--embed-dim",
-            self.embed_dim_var.get().strip(),
-            "--transformer-depth",
-            self.depth_var.get().strip(),
-            "--num-heads",
-            self.heads_var.get().strip(),
+            "--encoder-name",
+            self.encoder_name_var.get().strip(),
+            "--feature-dim",
+            self.feature_dim_var.get().strip(),
             "--device",
             self.selected_device_name(),
             "--best-metric",
             self.best_metric_var.get().strip(),
         ]
+        command.append("--pretrained" if self.pretrained_var.get() else "--no-pretrained")
+        command.append("--freeze-encoder" if self.freeze_encoder_var.get() else "--no-freeze-encoder")
         if self.max_samples_var.get().strip():
             command.extend(["--max-samples", self.max_samples_var.get().strip()])
         if mode == "fresh":

@@ -14,7 +14,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.data.dataloader import ProcessedPix3DDataset
-from src.inference.baseline_inference import load_baseline_model, select_device
+from src.inference.baseline_inference import load_baseline_model, model_points, select_device
 from src.metrics.losses import chamfer_distance, f_score
 
 
@@ -46,7 +46,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
     for batch_index, batch in enumerate(dataloader, start=1):
         images = batch["image"].to(device)
         points_gt = batch["points_gt"].to(device)
-        points_pred = model(images)
+        points_pred = model_points(model, images)
 
         batch_cd = chamfer_distance(points_pred, points_gt).item()
         batch_f, batch_precision, batch_recall = f_score(
@@ -111,13 +111,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_baseline/outputs/checkpoints/best_model.pt",
+        default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt",
     )
-    parser.add_argument("--output-dir", default="results/chair_baseline")
+    parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     return parser.parse_args()
