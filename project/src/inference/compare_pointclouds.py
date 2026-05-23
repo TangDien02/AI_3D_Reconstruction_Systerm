@@ -107,6 +107,7 @@ def compare_sample(args: argparse.Namespace) -> None:
         split=args.split,
         categories=categories,
         max_samples=args.max_samples,
+        expected_num_points=int(checkpoint.get("num_points", 2048)),
     )
     if len(dataset) == 0:
         raise RuntimeError(

@@ -93,9 +93,13 @@ class TrainingConfigGui(tk.Tk):
         self.resume_mode_var = tk.StringVar(value="auto_best")
         self.custom_checkpoint_var = tk.StringVar(value="")
         self.max_samples_var = tk.StringVar(value="")
-        self.epochs_var = tk.StringVar(value="5")
+        self.epochs_var = tk.StringVar(value="30")
         self.batch_size_var = tk.StringVar(value="2")
         self.lr_var = tk.StringVar(value="0.0001")
+        self.decoder_lr_var = tk.StringVar(value="0.0001")
+        self.encoder_lr_var = tk.StringVar(value="0.00001")
+        self.weight_decay_var = tk.StringVar(value="0.0001")
+        self.unfreeze_epoch_var = tk.StringVar(value="10")
         self.num_points_var = tk.StringVar(value="2048")
         self.image_size_var = tk.StringVar(value="224")
         self.encoder_name_var = tk.StringVar(value="resnet18")
@@ -195,22 +199,26 @@ class TrainingConfigGui(tk.Tk):
             ("Epochs to add", self.epochs_var),
             ("Batch size", self.batch_size_var),
             ("Learning rate", self.lr_var),
+            ("Decoder LR", self.decoder_lr_var),
+            ("Encoder LR", self.encoder_lr_var),
+            ("Weight decay", self.weight_decay_var),
+            ("Unfreeze epoch", self.unfreeze_epoch_var),
         ]
         for row, (label, variable) in enumerate(fields):
             ttk.Label(train_frame, text=label).grid(row=row, column=0, sticky=tk.W, padx=8, pady=5)
             ttk.Entry(train_frame, textvariable=variable, width=16).grid(row=row, column=1, sticky=tk.W, padx=8, pady=5)
 
-        ttk.Label(train_frame, text="Best metric").grid(row=4, column=0, sticky=tk.W, padx=8, pady=5)
+        ttk.Label(train_frame, text="Best metric").grid(row=8, column=0, sticky=tk.W, padx=8, pady=5)
         ttk.Combobox(
             train_frame,
             textvariable=self.best_metric_var,
             values=["val_chamfer_distance", "val_f_score"],
             state="readonly",
             width=24,
-        ).grid(row=4, column=1, sticky=tk.W, padx=8, pady=5)
+        ).grid(row=8, column=1, sticky=tk.W, padx=8, pady=5)
 
         ttk.Checkbutton(train_frame, text="Force CPU", variable=self.force_cpu_var).grid(
-            row=5,
+            row=9,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -361,13 +369,14 @@ class TrainingConfigGui(tk.Tk):
             "max_samples": self.max_samples_var,
             "epochs": self.epochs_var,
             "batch_size": self.batch_size_var,
+            "unfreeze_epoch": self.unfreeze_epoch_var,
             "num_points": self.num_points_var,
             "image_size": self.image_size_var,
             "feature_dim": self.feature_dim_var,
         }
         for key, variable in int_fields.items():
             text = variable.get().strip()
-            if key == "max_samples" and text == "":
+            if key in {"max_samples", "unfreeze_epoch"} and text == "":
                 config[key] = None
                 continue
             try:
@@ -386,6 +395,19 @@ class TrainingConfigGui(tk.Tk):
             config["lr"] = lr
         except ValueError:
             errors.append("learning rate phai la so.")
+        for key, variable in {
+            "decoder_lr": self.decoder_lr_var,
+            "encoder_lr": self.encoder_lr_var,
+            "weight_decay": self.weight_decay_var,
+        }.items():
+            try:
+                value = float(variable.get().strip())
+            except ValueError:
+                errors.append(f"{key} phai la so.")
+                continue
+            if value <= 0:
+                errors.append(f"{key} phai lon hon 0.")
+            config[key] = value
         return config, errors
 
     def resolve_checkpoint_path(self) -> tuple[Path | None, str]:
@@ -547,6 +569,12 @@ class TrainingConfigGui(tk.Tk):
             self.batch_size_var.get().strip(),
             "--lr",
             self.lr_var.get().strip(),
+            "--decoder-lr",
+            self.decoder_lr_var.get().strip(),
+            "--encoder-lr",
+            self.encoder_lr_var.get().strip(),
+            "--weight-decay",
+            self.weight_decay_var.get().strip(),
             "--output-dir",
             self.output_dir_var.get().strip(),
             "--num-points",
@@ -566,6 +594,8 @@ class TrainingConfigGui(tk.Tk):
         command.append("--freeze-encoder" if self.freeze_encoder_var.get() else "--no-freeze-encoder")
         if self.max_samples_var.get().strip():
             command.extend(["--max-samples", self.max_samples_var.get().strip()])
+        if self.unfreeze_epoch_var.get().strip():
+            command.extend(["--unfreeze-epoch", self.unfreeze_epoch_var.get().strip()])
         if mode == "fresh":
             command.append("--no-resume")
         elif mode in {"best", "last", "custom"} and checkpoint_path is not None:

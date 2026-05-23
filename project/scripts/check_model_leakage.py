@@ -3,7 +3,8 @@ import sys
 import pandas as pd
 
 
-SPLIT_DIR = Path("data/processed/splits")
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SPLIT_DIR = PROJECT_DIR / "data" / "processed" / "splits"
 
 
 def normalize_model_path(path: object) -> str:
@@ -80,11 +81,11 @@ def main() -> None:
     print("-------")
 
     if total_leaks == 0:
-        print("OK: Không có CAD model leakage giữa train/val/test.")
+        print("OK: no CAD model leakage between train/val/test.")
         sys.exit(0)
 
-    print("LEAKAGE DETECTED: Cùng một CAD model đang xuất hiện ở nhiều split.")
-    print("Cần sửa split sang model-level grouped split rồi tạo lại data/processed/splits.")
+    print("LEAKAGE DETECTED: the same CAD model appears in multiple splits.")
+    print("Regenerate data/processed/splits with model-level grouped splitting.")
     sys.exit(1)
 
 

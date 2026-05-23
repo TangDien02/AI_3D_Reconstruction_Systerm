@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -43,12 +44,36 @@ def save_pointcloud(
     overwrite: bool = False,
 ) -> Path:
     output_path = Path(output_path)
+    metadata_path = output_path.with_suffix(output_path.suffix + ".json")
+    expected_metadata = {
+        "source_mesh": str(Path(mesh_path).as_posix()),
+        "num_points": int(num_points),
+        "seed": seed,
+        "normalization": "center_max_norm_v1",
+        "format_version": 1,
+    }
+
     if output_path.is_file() and not overwrite:
-        return output_path
+        try:
+            points = np.load(output_path, mmap_mode="r")
+            point_count_matches = points.ndim == 2 and points.shape[1] == 3 and points.shape[0] == num_points
+        except Exception:
+            point_count_matches = False
+
+        if point_count_matches:
+            if not metadata_path.is_file():
+                metadata_path.write_text(json.dumps(expected_metadata, indent=2), encoding="utf-8")
+            return output_path
+
+        print(
+            f"Regenerating incompatible point cloud artifact: {output_path}",
+            flush=True,
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     points = sample_mesh_points(mesh_path, num_points=num_points, seed=seed)
     np.save(output_path, points)
+    metadata_path.write_text(json.dumps(expected_metadata, indent=2), encoding="utf-8")
     return output_path
 
 
@@ -70,6 +95,12 @@ def build_pointclouds_from_metadata(
         raise KeyError("metadata must contain 'model' and 'pointcloud' columns.")
 
     saved_paths = []
+    pointcloud_collisions = metadata.groupby("pointcloud")["model"].nunique()
+    collided_paths = pointcloud_collisions[pointcloud_collisions > 1]
+    if not collided_paths.empty:
+        examples = ", ".join(collided_paths.head(5).index.astype(str))
+        raise RuntimeError(f"pointcloud path collision detected before sampling: {examples}")
+
     unique_pointclouds = metadata[["model", "pointcloud"]].drop_duplicates("pointcloud")
     if max_models is not None:
         unique_pointclouds = unique_pointclouds.head(max_models)

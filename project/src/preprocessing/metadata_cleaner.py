@@ -47,6 +47,20 @@ def _relative_point_path(row: pd.Series) -> str:
     return str(Path("points") / str(row["category"]) / f"{model_uid}.npy").replace("\\", "/")
 
 
+def validate_metadata_paths(metadata: pd.DataFrame) -> None:
+    model_uid_collisions = metadata.groupby("model_uid")["model"].nunique()
+    collided_uids = model_uid_collisions[model_uid_collisions > 1]
+    if not collided_uids.empty:
+        examples = ", ".join(collided_uids.head(5).index.astype(str))
+        raise RuntimeError(f"model_uid collision detected for: {examples}")
+
+    pointcloud_collisions = metadata.groupby("pointcloud")["model"].nunique()
+    collided_paths = pointcloud_collisions[pointcloud_collisions > 1]
+    if not collided_paths.empty:
+        examples = ", ".join(collided_paths.head(5).index.astype(str))
+        raise RuntimeError(f"pointcloud path collision detected for: {examples}")
+
+
 def clean_pix3d_metadata(raw_dir: str | Path, categories: Iterable[str] | None = None) -> pd.DataFrame:
     raw_dir = Path(raw_dir)
     data = load_pix3d_json(raw_dir)
@@ -82,6 +96,7 @@ def clean_pix3d_metadata(raw_dir: str | Path, categories: Iterable[str] | None =
     clean_data["processed_image"] = clean_data.apply(_relative_processed_image_path, axis=1)
     clean_data["processed_mask"] = clean_data.apply(_relative_processed_mask_path, axis=1)
     clean_data["pointcloud"] = clean_data.apply(_relative_point_path, axis=1)
+    validate_metadata_paths(clean_data)
 
     return clean_data
 

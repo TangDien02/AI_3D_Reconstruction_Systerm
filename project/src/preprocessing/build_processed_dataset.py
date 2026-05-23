@@ -137,6 +137,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.max_samples is not None and args.max_samples < 0:
+        args.max_samples = None
     raw_dir = Path(args.raw_dir)
     output_dir = Path(args.output_dir)
 

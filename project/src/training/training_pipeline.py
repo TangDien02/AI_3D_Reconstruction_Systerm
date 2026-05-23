@@ -188,8 +188,17 @@ def parse_args():
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--decoder-lr", type=float, default=None)
+    parser.add_argument("--encoder-lr", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--unfreeze-epoch",
+        type=int,
+        default=None,
+        help="Absolute epoch at which to unfreeze the ResNet encoder. Omit to keep the initial freeze setting.",
+    )
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument(
         "--device",
@@ -232,7 +241,11 @@ def parse_args():
     parser.add_argument("--comparison-index", type=int, default=0)
     parser.add_argument("--max-plot-points", type=int, default=2048)
     parser.set_defaults(resume=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    for field in ("max_samples", "val_max_samples", "eval_max_samples", "unfreeze_epoch"):
+        if getattr(args, field) is not None and getattr(args, field) < 0:
+            setattr(args, field, None)
+    return args
 
 
 def build_checkpoint(
@@ -257,11 +270,16 @@ def build_checkpoint(
         "feature_dim": args.feature_dim,
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
+        "encoder_unfrozen": getattr(args, "encoder_unfrozen", None),
         "epoch": epoch,
         "best_metric": best_metric,
         "best_score": best_score,
         "best_epoch": best_epoch,
         "learning_rate": args.lr,
+        "decoder_lr": getattr(args, "decoder_lr", None),
+        "encoder_lr": getattr(args, "encoder_lr", None),
+        "weight_decay": getattr(args, "weight_decay", 0.0),
+        "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
         "dataset_mode": args.dataset_mode,
         "split": args.split,
         "val_split": getattr(args, "val_split", None),
@@ -346,11 +364,77 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
         )
 
 
+def validate_processed_splits(processed_dir: Path, train_split: str, val_split: str) -> dict[str, int]:
+    import pandas as pd
+
+    split_dir = processed_dir / "splits"
+    split_frames = {}
+    required_columns = {"model_uid", "pointcloud", "processed_image", "category"}
+    for split_name in {train_split, val_split, "test"}:
+        split_path = split_dir / f"{split_name}.csv"
+        if not split_path.is_file():
+            continue
+        frame = pd.read_csv(split_path)
+        missing_columns = required_columns - set(frame.columns)
+        if missing_columns:
+            raise RuntimeError(f"{split_path} is missing required columns: {sorted(missing_columns)}")
+        split_frames[split_name] = frame
+
+    if train_split in split_frames and val_split in split_frames:
+        train_models = set(split_frames[train_split]["model_uid"].astype(str))
+        val_models = set(split_frames[val_split]["model_uid"].astype(str))
+        overlap = train_models & val_models
+        if overlap:
+            examples = ", ".join(sorted(overlap)[:5])
+            raise RuntimeError(f"CAD model leakage between {train_split} and {val_split}: {examples}")
+
+    if "test" in split_frames:
+        for split_name, frame in split_frames.items():
+            if split_name == "test":
+                continue
+            overlap = set(frame["model_uid"].astype(str)) & set(split_frames["test"]["model_uid"].astype(str))
+            if overlap:
+                examples = ", ".join(sorted(overlap)[:5])
+                raise RuntimeError(f"CAD model leakage between {split_name} and test: {examples}")
+
+    counts = {}
+    for split_name, frame in split_frames.items():
+        counts[f"{split_name}_samples"] = len(frame)
+        counts[f"{split_name}_models"] = frame["model_uid"].nunique()
+    return counts
+
+
 def move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
     for state in optimizer.state.values():
         for key, value in state.items():
             if torch.is_tensor(value):
                 state[key] = value.to(device)
+
+
+def build_optimizer(model, args) -> torch.optim.Optimizer:
+    decoder_lr = getattr(args, "decoder_lr", None) or args.lr
+    encoder_lr = getattr(args, "encoder_lr", None) or decoder_lr
+    weight_decay = getattr(args, "weight_decay", 0.0)
+
+    encoder_param_ids = {id(param) for param in model.encoder.parameters()}
+    encoder_params = [
+        param for param in model.encoder.parameters()
+        if param.requires_grad
+    ]
+    decoder_params = [
+        param for param in model.parameters()
+        if param.requires_grad and id(param) not in encoder_param_ids
+    ]
+
+    param_groups = []
+    if decoder_params:
+        param_groups.append({"params": decoder_params, "lr": decoder_lr, "name": "decoder"})
+    if encoder_params:
+        param_groups.append({"params": encoder_params, "lr": encoder_lr, "name": "encoder"})
+    if not param_groups:
+        raise RuntimeError("No trainable parameters found.")
+
+    return torch.optim.AdamW(param_groups, weight_decay=weight_decay)
 
 
 def read_last_metrics_epoch(metrics_path: Path) -> int:
@@ -573,6 +657,14 @@ def run_training(args):
         args.pretrained = True
     if not hasattr(args, "freeze_encoder"):
         args.freeze_encoder = True
+    if not hasattr(args, "decoder_lr"):
+        args.decoder_lr = None
+    if not hasattr(args, "encoder_lr"):
+        args.encoder_lr = 1e-5
+    if not hasattr(args, "weight_decay"):
+        args.weight_decay = 1e-4
+    if not hasattr(args, "unfreeze_epoch"):
+        args.unfreeze_epoch = None
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -589,12 +681,16 @@ def run_training(args):
     device = select_training_device(args.device)
     logger.info("Starting baseline training on device=%s", device)
     logger.info("Output directory: %s", output_dir)
+    split_validation = {}
     if args.dataset_mode == "processed":
+        split_validation = validate_processed_splits(processed_dir, args.split, args.val_split)
+        logger.info("Validated processed splits: %s", split_validation)
         train_dataset = ProcessedPix3DDataset(
             processed_dir=processed_dir,
             split=args.split,
             categories=args.categories,
             max_samples=args.max_samples,
+            expected_num_points=args.num_points,
         )
         validation_max_samples = args.val_max_samples
         if validation_max_samples is None:
@@ -604,6 +700,7 @@ def run_training(args):
             split=args.val_split,
             categories=args.categories,
             max_samples=validation_max_samples,
+            expected_num_points=args.num_points,
         )
     else:
         dataset = Pix3DDataset(
@@ -648,6 +745,12 @@ def run_training(args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     logger.info("Train samples: %s | Val samples: %s", train_size, val_size)
+    if args.max_samples is not None or getattr(args, "val_max_samples", None) is not None:
+        logger.warning(
+            "Limited-sample training run: max_samples=%s val_max_samples=%s. Treat metrics as smoke-test only.",
+            args.max_samples,
+            getattr(args, "val_max_samples", None),
+        )
 
     model = build_object_reconstruction_model(
         encoder_name=args.encoder_name,
@@ -665,7 +768,9 @@ def run_training(args):
         args.num_points,
         model.trainable_parameter_count(),
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    encoder_unfrozen = not args.freeze_encoder
+    args.encoder_unfrozen = encoder_unfrozen
+    optimizer = build_optimizer(model, args)
 
     metrics_path = metric_dir / "training_metrics.csv"
     best_checkpoint_path = checkpoint_dir / "best_model.pt"
@@ -680,10 +785,22 @@ def run_training(args):
         validate_resume_checkpoint(checkpoint, args, resume_checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
 
+        if checkpoint.get("encoder_unfrozen") and not encoder_unfrozen:
+            model.unfreeze_encoder()
+            encoder_unfrozen = True
+            args.encoder_unfrozen = True
+            optimizer = build_optimizer(model, args)
+            logger.info("Resume checkpoint was saved after encoder unfreeze; rebuilt optimizer param groups.")
+
         if "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            move_optimizer_state_to_device(optimizer, device)
-            optimizer_resumed = True
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                move_optimizer_state_to_device(optimizer, device)
+                optimizer_resumed = True
+            except ValueError as exc:
+                message = f"Could not resume optimizer_state_dict ({exc}); continuing with a fresh AdamW optimizer."
+                print(message)
+                logger.warning(message)
 
         best_score = checkpoint.get("best_score")
         if best_score is None and args.best_metric in checkpoint:
@@ -698,7 +815,7 @@ def run_training(args):
         print(message)
         logger.info(message)
         if not optimizer_resumed:
-            message = "Resume checkpoint has no optimizer_state_dict; continuing with a fresh Adam optimizer."
+            message = "Resume checkpoint has no optimizer_state_dict; continuing with a fresh AdamW optimizer."
             print(message)
             logger.info(message)
 
@@ -714,6 +831,22 @@ def run_training(args):
             writer.writeheader()
 
         for epoch in range(start_epoch, end_epoch + 1):
+            if (
+                not encoder_unfrozen
+                and args.unfreeze_epoch is not None
+                and epoch >= args.unfreeze_epoch
+            ):
+                model.unfreeze_encoder()
+                encoder_unfrozen = True
+                args.encoder_unfrozen = True
+                optimizer = build_optimizer(model, args)
+                message = (
+                    f"Unfroze encoder at epoch={epoch}; "
+                    f"encoder_lr={args.encoder_lr} decoder_lr={args.decoder_lr or args.lr}"
+                )
+                print(message)
+                logger.info(message)
+
             train_loss = train_one_epoch(model, train_loader, optimizer, device)
             val_metrics = evaluate(model, val_loader, device, threshold=args.f_threshold)
 
@@ -729,6 +862,7 @@ def run_training(args):
             if is_better_score(args.best_metric, current_score, best_score):
                 best_score = current_score
                 best_epoch = epoch
+                args.encoder_unfrozen = encoder_unfrozen
                 torch.save(
                     build_checkpoint(
                         model=model,
@@ -759,6 +893,7 @@ def run_training(args):
             logger.info(message)
 
     checkpoint_path = checkpoint_dir / "resnet_pointcloud_net.pt"
+    args.encoder_unfrozen = encoder_unfrozen
     torch.save(
         build_checkpoint(
             model=model,
@@ -793,6 +928,8 @@ def run_training(args):
         "val_max_samples": args.val_max_samples,
         "train_samples": train_size,
         "val_samples": val_size,
+        "split_validation": split_validation,
+        "run_scale": "limited_smoke" if args.max_samples is not None else "full_split",
         "num_points": args.num_points,
         "image_size": args.image_size,
         "model_type": "resnet_pointcloud",
@@ -800,6 +937,11 @@ def run_training(args):
         "feature_dim": args.feature_dim,
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
+        "encoder_unfrozen": encoder_unfrozen,
+        "decoder_lr": args.decoder_lr or args.lr,
+        "encoder_lr": args.encoder_lr,
+        "weight_decay": args.weight_decay,
+        "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "start_epoch": start_epoch,

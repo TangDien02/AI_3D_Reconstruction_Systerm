@@ -136,11 +136,13 @@ class ProcessedPix3DDataset(Dataset):
         max_samples=None,
         transform=None,
         require_files=True,
+        expected_num_points: int | None = None,
     ):
         self.processed_dir = Path(processed_dir)
         self.split = split
         self.categories = set(categories) if categories else None
         self.transform = transform
+        self.expected_num_points = expected_num_points
 
         split_path = self.processed_dir / "splits" / f"{split}.csv"
         if not split_path.is_file():
@@ -179,7 +181,15 @@ class ProcessedPix3DDataset(Dataset):
         if self.transform:
             image_tensor = self.transform(image_tensor)
 
-        points_gt = torch.from_numpy(np.load(pointcloud_path).astype(np.float32))
+        points_np = np.load(pointcloud_path).astype(np.float32)
+        if points_np.ndim != 2 or points_np.shape[1] != 3:
+            raise RuntimeError(f"Invalid point cloud shape {points_np.shape}: {pointcloud_path}")
+        if self.expected_num_points is not None and points_np.shape[0] != self.expected_num_points:
+            raise RuntimeError(
+                f"Point cloud artifact has {points_np.shape[0]} points but training expects "
+                f"{self.expected_num_points}: {pointcloud_path}. Regenerate processed point clouds."
+            )
+        points_gt = torch.from_numpy(points_np)
 
         sample = {
             "image": image_tensor,
@@ -188,6 +198,10 @@ class ProcessedPix3DDataset(Dataset):
             "pointcloud_path": str(pointcloud_path),
             "image_path": str(image_path),
         }
+        if "sample_id" in item:
+            sample["sample_id"] = str(item["sample_id"])
+        if "model_uid" in item:
+            sample["model_uid"] = str(item["model_uid"])
         if "model" in item:
             sample["model_path"] = str(item["model"])
         return sample

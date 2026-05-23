@@ -4,6 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
   Image,
+  Linking,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -11,17 +12,17 @@ import {
   View,
 } from 'react-native';
 
-const API_BASE_URL = 'http://192.168.1.5:8000';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.1.3:8000';
 const DETECT_FRAME_WIDTH = 416;
 const DETECT_CAPTURE_QUALITY = 0.25;
 const DETECT_UPLOAD_COMPRESS = 0.45;
 const DETECT_COOLDOWN_MS = 120;
-
-const workflowSteps = [
-  'Nhận ảnh hoặc video object',
-  'Phát hiện và crop vật thể',
-  'Trích xuất feature ảnh',
-  'Tái tạo point cloud / model 3D',
+const RECON_CAPTURE_QUALITY = 0.92;
+const activeWorkflowSteps = [
+  'Nhan anh hoac video object',
+  'YOLO phat hien va crop vat the',
+  'ResNet reconstruct point cloud',
+  'Export PLY va OBJ mesh',
 ];
 
 export default function App() {
@@ -39,7 +40,9 @@ export default function App() {
   const [latestDetectImageUri, setLatestDetectImageUri] = useState(null);
   const [selectedObject, setSelectedObject] = useState(null);
   const [selectedFrameUri, setSelectedFrameUri] = useState(null);
+  const [selectedDetectionSize, setSelectedDetectionSize] = useState(null);
   const [segmentResult, setSegmentResult] = useState(null);
+  const [reconstructionResult, setReconstructionResult] = useState(null);
   const [permission, requestPermission] = useCameraPermissions();
 
   const clearObjectState = () => {
@@ -48,7 +51,9 @@ export default function App() {
     setLatestDetectImageUri(null);
     setSelectedObject(null);
     setSelectedFrameUri(null);
+    setSelectedDetectionSize(null);
     setSegmentResult(null);
+    setReconstructionResult(null);
   };
 
   const getServerFileUrl = (path) => {
@@ -81,8 +86,34 @@ export default function App() {
     setScreen('camera');
   };
 
-  const showPlaceholder = () => {
+  const runReconstruction = () => {
     reconstructSelectedObject();
+  };
+
+  const waitForDetectionIdle = async () => {
+    for (let index = 0; index < 12 && detectingRef.current; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+  };
+
+  const scaleBboxToImage = (bbox, sourceSize, targetSize) => {
+    if (!bbox || !sourceSize?.width || !sourceSize?.height || !targetSize?.width || !targetSize?.height) {
+      throw new Error('Khong doc duoc kich thuoc frame de scale bbox.');
+    }
+
+    const scaleX = targetSize.width / sourceSize.width;
+    const scaleY = targetSize.height / sourceSize.height;
+    const x = Math.max(0, bbox.x * scaleX);
+    const y = Math.max(0, bbox.y * scaleY);
+    const width = Math.min(targetSize.width - x, bbox.width * scaleX);
+    const height = Math.min(targetSize.height - y, bbox.height * scaleY);
+
+    return {
+      x,
+      y,
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+    };
   };
 
   const scanCurrentFrame = async () => {
@@ -179,32 +210,59 @@ export default function App() {
 
     setSelectedObject(object);
     setSelectedFrameUri(latestDetectImageUri);
+    setSelectedDetectionSize(detectedImageSize);
     setSegmentResult(null);
-    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de mask/crop.`);
+    setReconstructionResult(null);
+    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de chup full-res va reconstruct 3D.`);
   };
 
   const reconstructSelectedObject = async () => {
-    if (!selectedObject?.bbox || !selectedFrameUri) {
+    if (!selectedObject?.bbox) {
       setCameraStatus('Hay cham vao bbox vat the truoc khi Tai tao.');
+      return;
+    }
+    if (!cameraRef.current) {
+      setCameraStatus('Camera chua san sang de chup anh reconstruct.');
       return;
     }
 
     setIsSegmenting(true);
-    setCameraStatus('Dang mask/crop vat the da chon...');
+    setReconstructionResult(null);
+    scanActiveRef.current = false;
+    setIsScanning(false);
+    setIsDetecting(false);
+    setCameraStatus('Dang chup frame full-res de reconstruct...');
 
     try {
+      await waitForDetectionIdle();
+      const reconstructionPhoto = await cameraRef.current.takePictureAsync({
+        quality: RECON_CAPTURE_QUALITY,
+        base64: false,
+        shutterSound: false,
+        skipProcessing: false,
+      });
+      const sourceSize = selectedDetectionSize || detectedImageSize;
+      const targetSize = {
+        width: reconstructionPhoto.width || 0,
+        height: reconstructionPhoto.height || 0,
+      };
+      const scaledBbox = scaleBboxToImage(selectedObject.bbox, sourceSize, targetSize);
+
+      setSelectedFrameUri(reconstructionPhoto.uri);
+      setCameraStatus('Dang YOLO crop full-res + ResNet reconstruct + export OBJ...');
+
       const formData = new FormData();
       formData.append('image', {
-        uri: selectedFrameUri,
-        name: 'selected-object-frame.jpg',
+        uri: reconstructionPhoto.uri,
+        name: 'selected-object-fullres.jpg',
         type: 'image/jpeg',
       });
-      formData.append('bbox_x', String(selectedObject.bbox.x));
-      formData.append('bbox_y', String(selectedObject.bbox.y));
-      formData.append('bbox_width', String(selectedObject.bbox.width));
-      formData.append('bbox_height', String(selectedObject.bbox.height));
+      formData.append('bbox_x', String(scaledBbox.x));
+      formData.append('bbox_y', String(scaledBbox.y));
+      formData.append('bbox_width', String(scaledBbox.width));
+      formData.append('bbox_height', String(scaledBbox.height));
 
-      const response = await fetch(`${API_BASE_URL}/segment-object`, {
+      const response = await fetch(`${API_BASE_URL}/reconstruct-object`, {
         method: 'POST',
         body: formData,
       });
@@ -215,11 +273,13 @@ export default function App() {
       }
 
       const payload = await response.json();
-      setSegmentResult(payload);
-      setCameraStatus(`Da tao mask/crop cho ${payload.selected?.label || selectedObject.label}.`);
+      setSegmentResult(payload.segmentation || null);
+      setReconstructionResult(payload.reconstruction || null);
+      setCameraStatus(`Da reconstruct ${payload.selected?.label || selectedObject.label}. OBJ san sang.`);
     } catch (error) {
       setSegmentResult(null);
-      setCameraStatus(`Loi mask/crop: ${error.message}`);
+      setReconstructionResult(null);
+      setCameraStatus(`Loi reconstruct: ${error.message}`);
     } finally {
       setIsSegmenting(false);
     }
@@ -362,7 +422,35 @@ export default function App() {
                   source={{ uri: getServerFileUrl(segmentResult.files.masked_crop) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>Masked crop san sang cho buoc 3D.</Text>
+                <Text style={styles.segmentPreviewText}>Masked crop da dua vao ResNet.</Text>
+              </View>
+            )}
+            {reconstructionResult?.files?.preview_png && (
+              <View style={styles.reconstructionPanel}>
+                <Image
+                  source={{ uri: getServerFileUrl(reconstructionResult.files.preview_png) }}
+                  style={styles.reconstructionPreviewImage}
+                />
+                <View style={styles.reconstructionInfo}>
+                  <Text style={styles.reconstructionTitle}>OBJ model ready</Text>
+                  <Text style={styles.reconstructionText}>
+                    {reconstructionResult.num_points || 0} points -> {reconstructionResult.mesh?.faces || 0} faces
+                  </Text>
+                  <View style={styles.linkRow}>
+                    <Pressable
+                      style={styles.fileLink}
+                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.mesh_obj))}
+                    >
+                      <Text style={styles.fileLinkText}>OBJ</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.fileLink}
+                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.pointcloud_ply))}
+                    >
+                      <Text style={styles.fileLinkText}>PLY</Text>
+                    </Pressable>
+                  </View>
+                </View>
               </View>
             )}
             <View style={styles.actionRow}>
@@ -385,7 +473,7 @@ export default function App() {
                   (!selectedObject || isSegmenting) && styles.disabledCameraAction,
                 ]}
                 disabled={!selectedObject || isSegmenting}
-                onPress={() => showPlaceholder('Tái tạo 3D')}
+                onPress={runReconstruction}
               >
                 <Text style={styles.primaryActionText}>
                   {isSegmenting ? 'Dang xu ly' : 'Tái tạo'}
@@ -405,8 +493,8 @@ export default function App() {
         <View style={styles.permissionCard}>
           <Text style={styles.permissionTitle}>Cần quyền camera</Text>
           <Text style={styles.permissionText}>
-            Ứng dụng chỉ cần quyền camera để mở màn hình quét. Phần AI scan và tái tạo
-            chưa được tích hợp trong bản này.
+            Ứng dụng cần quyền camera để quét object, gửi YOLO crop về backend và tái tạo
+            point cloud / OBJ bằng checkpoint ResNet.
           </Text>
           <Pressable style={styles.primaryButton} onPress={openCamera}>
             <Text style={styles.primaryButtonText}>Cho phép camera</Text>
@@ -431,16 +519,16 @@ export default function App() {
         </View>
 
         <View style={styles.heroBlock}>
-          <Text style={styles.title}>Quét vật thể và chuẩn bị tái tạo mô hình 3D</Text>
+          <Text style={styles.title}>Quét vật thể và tái tạo mô hình 3D</Text>
           <Text style={styles.subtitle}>
-            Ứng dụng mobile dùng để mở camera, định hướng người dùng quét object và
-            gửi dữ liệu cho pipeline AI ở backend trong các bước tiếp theo.
+            Camera mobile detect object liên tục, chọn bbox, gửi ảnh sang backend để YOLO crop,
+            ResNet reconstruct point cloud và export file OBJ.
           </Text>
         </View>
 
         <View style={styles.workflowPanel}>
-          <Text style={styles.sectionTitle}>Luồng xử lý dự kiến</Text>
-          {workflowSteps.map((step, index) => (
+          <Text style={styles.sectionTitle}>Luồng xử lý</Text>
+          {activeWorkflowSteps.map((step, index) => (
             <View key={step} style={styles.stepRow}>
               <View style={styles.stepIndex}>
                 <Text style={styles.stepIndexText}>{index + 1}</Text>
@@ -453,8 +541,8 @@ export default function App() {
         <View style={styles.noteBox}>
           <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
           <Text style={styles.noteText}>
-            Đã setup giao diện và chức năng mở camera. Các nút quét vật thể và tái
-            tạo đang là placeholder cho bước tích hợp AI sau.
+            Đã nối camera mobile với backend. Để chạy reconstruction thật, backend cần checkpoint
+            ResNet hợp lệ ở cấu hình RECON_BASELINE_CHECKPOINT hoặc output mặc định.
           </Text>
         </View>
       </View>
@@ -791,6 +879,57 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '700',
+  },
+  reconstructionPanel: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#B2DDFF',
+    backgroundColor: '#EFF8FF',
+  },
+  reconstructionPreviewImage: {
+    width: 82,
+    height: 82,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#D0D5DD',
+    backgroundColor: '#FFFFFF',
+  },
+  reconstructionInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  reconstructionTitle: {
+    color: '#1849A9',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  reconstructionText: {
+    color: '#344054',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  linkRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  fileLink: {
+    minHeight: 30,
+    minWidth: 54,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#155EEF',
+  },
+  fileLinkText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '900',
   },
   actionRow: {
     flexDirection: 'row',

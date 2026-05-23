@@ -34,25 +34,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Limit samples for quick smoke tests. Omit or pass -1 to use all samples.",
     )
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--f-threshold", type=float, default=0.05)
-    parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--decoder-lr", type=float, default=None)
+    parser.add_argument("--encoder-lr", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--unfreeze-epoch", type=int, default=10)
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument(
         "--best-metric",
         choices=["val_chamfer_distance", "val_f_score"],
         default="val_chamfer_distance",
-    )
-    parser.add_argument("--patch-size", type=int, default=16)
-    parser.add_argument("--embed-dim", type=int, default=256)
-    parser.add_argument("--transformer-depth", type=int, default=4)
-    parser.add_argument("--num-heads", type=int, default=8)
         help="Validation metric used to update outputs/checkpoints/best_model.pt.",
     )
     parser.add_argument(
@@ -156,10 +150,13 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
+        decoder_lr=args.decoder_lr,
+        encoder_lr=args.encoder_lr,
+        weight_decay=args.weight_decay,
+        unfreeze_epoch=args.unfreeze_epoch,
         f_threshold=args.f_threshold,
         best_metric=args.best_metric,
         device=args.device,
-        best_metric=args.best_metric,
         resume=args.resume,
         resume_checkpoint=args.resume_checkpoint,
     )

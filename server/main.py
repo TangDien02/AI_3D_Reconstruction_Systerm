@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import sys
 import time
@@ -9,10 +10,18 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
 app = FastAPI(title="3DRecon API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 SERVER_DIR = Path(__file__).resolve().parent
 REPO_DIR = SERVER_DIR.parent
@@ -27,11 +36,17 @@ YOLO_WEIGHTS = SERVER_DIR / "weights" / "yolo26n-seg.pt"
 DETECTION_CONFIDENCE = 0.60
 DETECTION_IMAGE_SIZE = 416
 DETECTION_MAX_OBJECTS = 8
-BASELINE_CHECKPOINT = PROJECT_DIR / "results" / "chair_resnet_baseline" / "outputs" / "checkpoints" / "best_model.pt"
+DEFAULT_BASELINE_CHECKPOINT = (
+    PROJECT_DIR / "results" / "chair_resnet_baseline" / "outputs" / "checkpoints" / "best_model.pt"
+)
+BASELINE_CHECKPOINT = Path(os.environ.get("RECON_BASELINE_CHECKPOINT", DEFAULT_BASELINE_CHECKPOINT))
+if not BASELINE_CHECKPOINT.is_absolute():
+    BASELINE_CHECKPOINT = PROJECT_DIR / BASELINE_CHECKPOINT
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SEGMENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/segment-outputs", StaticFiles(directory=SEGMENT_OUTPUT_DIR), name="segment_outputs")
+app.mount("/models", StaticFiles(directory=MODEL_OUTPUT_DIR), name="models")
 
 _yolo_model = None
 _yolo_model_lock = Lock()
@@ -125,6 +140,207 @@ def to_relative_url(path: Path) -> str:
     return f"/segment-outputs/{path.name}"
 
 
+def to_model_url(path: Path) -> str:
+    return f"/models/{path.name}"
+
+
+async def read_upload_image(image: UploadFile) -> Image.Image:
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty.")
+
+    try:
+        return ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.") from exc
+
+
+def detect_and_select_object(
+    pil_image: Image.Image,
+    object_id: int | None = None,
+    bbox_x: float | None = None,
+    bbox_y: float | None = None,
+    bbox_width: float | None = None,
+    bbox_height: float | None = None,
+):
+    image_width, image_height = pil_image.size
+    model = get_yolo_model()
+
+    try:
+        results = model.predict(
+            pil_image,
+            conf=DETECTION_CONFIDENCE,
+            imgsz=DETECTION_IMAGE_SIZE,
+            max_det=DETECTION_MAX_OBJECTS,
+            device=get_yolo_device(),
+            verbose=False,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"YOLO segmentation failed: {exc}") from exc
+
+    result = results[0] if results else None
+    if result is None or result.boxes is None or len(result.boxes) == 0:
+        raise HTTPException(status_code=404, detail="No object detected.")
+
+    detections = []
+    for index, box in enumerate(result.boxes):
+        cls_id = int(box.cls[0])
+        confidence = float(box.conf[0])
+        x1, y1, x2, y2 = clamp_bbox_xyxy(
+            [float(value) for value in box.xyxy[0].tolist()],
+            image_width=image_width,
+            image_height=image_height,
+        )
+        detections.append(
+            {
+                "index": index,
+                "label": model.names.get(cls_id, str(cls_id)),
+                "confidence": confidence,
+                "bbox_xyxy": (x1, y1, x2, y2),
+            }
+        )
+
+    selected_bbox = None
+    if None not in (bbox_x, bbox_y, bbox_width, bbox_height):
+        selected_bbox = clamp_bbox_xyxy(
+            [
+                float(bbox_x),
+                float(bbox_y),
+                float(bbox_x + bbox_width),
+                float(bbox_y + bbox_height),
+            ],
+            image_width=image_width,
+            image_height=image_height,
+        )
+
+    if selected_bbox is not None:
+        selected_detection = max(
+            detections,
+            key=lambda detection: bbox_iou(detection["bbox_xyxy"], selected_bbox),
+        )
+    elif object_id is not None and 0 <= object_id < len(detections):
+        selected_detection = detections[object_id]
+    else:
+        selected_detection = max(detections, key=lambda detection: detection["confidence"])
+
+    return result, selected_detection, detections
+
+
+def save_segment_artifacts(
+    pil_image: Image.Image,
+    result,
+    selected_detection: dict,
+    job_id: str,
+) -> tuple[dict, Path]:
+    image_width, image_height = pil_image.size
+    selected_index = selected_detection["index"]
+    selected_xyxy = selected_detection["bbox_xyxy"]
+    x1, y1, x2, y2 = selected_xyxy
+    crop_box = (int(x1), int(y1), int(x2), int(y2))
+
+    polygon = None
+    if result.masks is not None and result.masks.xy is not None and selected_index < len(result.masks.xy):
+        polygon = result.masks.xy[selected_index]
+    full_mask = make_mask_from_polygon(polygon, image_width, image_height, selected_xyxy)
+
+    masked_full = Image.new("RGB", pil_image.size, (255, 255, 255))
+    masked_full.paste(pil_image, mask=full_mask)
+    crop = pil_image.crop(crop_box)
+    mask_crop = full_mask.crop(crop_box)
+    masked_crop = masked_full.crop(crop_box)
+    transparent_crop = pil_image.crop(crop_box).convert("RGBA")
+    transparent_crop.putalpha(mask_crop)
+
+    overlay = pil_image.convert("RGBA")
+    green = Image.new("RGBA", pil_image.size, (163, 230, 53, 95))
+    overlay = Image.composite(green, overlay, full_mask).convert("RGB")
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle(crop_box, outline=(163, 230, 53), width=4)
+
+    original_path = SEGMENT_OUTPUT_DIR / f"{job_id}_original.jpg"
+    mask_path = SEGMENT_OUTPUT_DIR / f"{job_id}_mask.png"
+    crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_crop.jpg"
+    masked_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_masked_crop.png"
+    transparent_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_transparent_crop.png"
+    overlay_path = SEGMENT_OUTPUT_DIR / f"{job_id}_overlay.jpg"
+
+    pil_image.save(original_path, quality=92)
+    full_mask.save(mask_path)
+    crop.save(crop_path, quality=92)
+    masked_crop.save(masked_crop_path)
+    transparent_crop.save(transparent_crop_path)
+    overlay.save(overlay_path, quality=92)
+
+    selected_response = {
+        "id": str(selected_index),
+        "label": selected_detection["label"],
+        "confidence": round(selected_detection["confidence"], 4),
+        "bbox": {
+            "x": round(x1, 2),
+            "y": round(y1, 2),
+            "width": round(x2 - x1, 2),
+            "height": round(y2 - y1, 2),
+        },
+    }
+
+    return {
+        "selected": selected_response,
+        "files": {
+            "original": to_relative_url(original_path),
+            "mask": to_relative_url(mask_path),
+            "crop": to_relative_url(crop_path),
+            "masked_crop": to_relative_url(masked_crop_path),
+            "transparent_crop": to_relative_url(transparent_crop_path),
+            "overlay": to_relative_url(overlay_path),
+        },
+    }, masked_crop_path
+
+
+def save_reconstruction_artifacts(input_path: Path, job_id: str) -> dict:
+    try:
+        from src.inference.baseline_inference import predict_pointcloud
+        from src.utils.mesh_export import save_pointcloud_obj
+        from src.utils.pointcloud_io import save_pointcloud_npy, save_pointcloud_ply
+        from src.utils.visualization import plot_point_cloud
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Inference dependencies are not ready: {exc}",
+        ) from exc
+
+    try:
+        points, checkpoint = predict_pointcloud(input_path, BASELINE_CHECKPOINT)
+        npy_path = save_pointcloud_npy(points, MODEL_OUTPUT_DIR / f"{job_id}.npy")
+        ply_path = save_pointcloud_ply(points, MODEL_OUTPUT_DIR / f"{job_id}.ply")
+        obj_path, mesh_summary = save_pointcloud_obj(points, MODEL_OUTPUT_DIR / f"{job_id}.obj")
+        preview_path = plot_point_cloud(points, MODEL_OUTPUT_DIR / f"{job_id}.png", title=job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Reconstruction failed: {exc}") from exc
+
+    return {
+        "num_points": int(points.shape[0]),
+        "checkpoint": {
+            "path": str(BASELINE_CHECKPOINT),
+            "model_type": checkpoint.get("model_type"),
+            "encoder_name": checkpoint.get("encoder_name"),
+            "num_points": checkpoint.get("num_points"),
+        },
+        "mesh": mesh_summary,
+        "files": {
+            "pointcloud_npy": to_model_url(npy_path),
+            "pointcloud_ply": to_model_url(ply_path),
+            "mesh_obj": to_model_url(obj_path),
+            "preview_png": to_model_url(preview_path),
+        },
+        "paths": {
+            "pointcloud_npy": str(npy_path),
+            "pointcloud_ply": str(ply_path),
+            "mesh_obj": str(obj_path),
+            "preview_png": str(preview_path),
+        },
+    }
+
+
 @app.on_event("startup")
 def warmup_yolo_model():
     try:
@@ -147,8 +363,13 @@ def health_check():
     return {
         "status": "ok",
         "baseline_checkpoint_exists": BASELINE_CHECKPOINT.is_file(),
+        "baseline_checkpoint": str(BASELINE_CHECKPOINT),
         "yolo_weights_exists": YOLO_WEIGHTS.is_file(),
         "yolo_device": get_yolo_device(),
+        "outputs": {
+            "segment_outputs": "/segment-outputs",
+            "models": "/models",
+        },
     }
 
 
@@ -394,6 +615,63 @@ def get_scan_status(job_id: str):
     }
 
 
+@app.post("/reconstruct-object")
+async def reconstruct_object(
+    image: UploadFile = File(...),
+    object_id: int | None = Form(default=None),
+    bbox_x: float | None = Form(default=None),
+    bbox_y: float | None = Form(default=None),
+    bbox_width: float | None = Form(default=None),
+    bbox_height: float | None = Form(default=None),
+):
+    started_at = time.perf_counter()
+    if not BASELINE_CHECKPOINT.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
+        )
+
+    pil_image = await read_upload_image(image)
+    result, selected_detection, detections = detect_and_select_object(
+        pil_image,
+        object_id=object_id,
+        bbox_x=bbox_x,
+        bbox_y=bbox_y,
+        bbox_width=bbox_width,
+        bbox_height=bbox_height,
+    )
+
+    job_id = uuid.uuid4().hex
+    segment_payload, masked_crop_path = save_segment_artifacts(
+        pil_image=pil_image,
+        result=result,
+        selected_detection=selected_detection,
+        job_id=job_id,
+    )
+    reconstruction = save_reconstruction_artifacts(masked_crop_path, job_id)
+
+    return {
+        "job_id": job_id,
+        "status": "done",
+        "processing_ms": round((time.perf_counter() - started_at) * 1000, 1),
+        "image_width": pil_image.size[0],
+        "image_height": pil_image.size[1],
+        "selected": segment_payload["selected"],
+        "detections": [
+            {
+                "id": str(detection["index"]),
+                "label": detection["label"],
+                "confidence": round(detection["confidence"], 4),
+            }
+            for detection in detections
+        ],
+        "segmentation": {
+            "files": segment_payload["files"],
+        },
+        "reconstruction": reconstruction,
+    }
+
+
 @app.post("/reconstruct-image")
 async def reconstruct_image(image: UploadFile = File(...)):
     if not BASELINE_CHECKPOINT.is_file():
@@ -408,29 +686,16 @@ async def reconstruct_image(image: UploadFile = File(...)):
     with input_path.open("wb") as file:
         shutil.copyfileobj(image.file, file)
 
-    try:
-        from src.inference.baseline_inference import predict_pointcloud
-        from src.utils.pointcloud_io import save_pointcloud_npy, save_pointcloud_ply
-        from src.utils.visualization import plot_point_cloud
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Inference dependencies are not ready: {exc}",
-        ) from exc
-
-    try:
-        points, _ = predict_pointcloud(input_path, BASELINE_CHECKPOINT)
-        npy_path = save_pointcloud_npy(points, MODEL_OUTPUT_DIR / f"{job_id}.npy")
-        ply_path = save_pointcloud_ply(points, MODEL_OUTPUT_DIR / f"{job_id}.ply")
-        preview_path = plot_point_cloud(points, MODEL_OUTPUT_DIR / f"{job_id}.png", title=job_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Reconstruction failed: {exc}") from exc
+    reconstruction = save_reconstruction_artifacts(input_path, job_id)
 
     return {
         "job_id": job_id,
         "status": "done",
-        "num_points": int(points.shape[0]),
-        "pointcloud_npy": str(npy_path),
-        "pointcloud_ply": str(ply_path),
-        "preview_png": str(preview_path),
+        "num_points": reconstruction["num_points"],
+        "pointcloud_npy": reconstruction["paths"]["pointcloud_npy"],
+        "pointcloud_ply": reconstruction["paths"]["pointcloud_ply"],
+        "mesh_obj": reconstruction["paths"]["mesh_obj"],
+        "preview_png": reconstruction["paths"]["preview_png"],
+        "files": reconstruction["files"],
+        "mesh": reconstruction["mesh"],
     }

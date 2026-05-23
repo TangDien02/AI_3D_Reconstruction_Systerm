@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--category", default="chair")
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--image-size", type=int, default=224)
@@ -25,6 +25,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feature-dim", type=int, default=512)
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--decoder-lr", type=float, default=None)
+    parser.add_argument("--encoder-lr", type=float, default=1e-5)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--unfreeze-epoch", type=int, default=10)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--quick", action="store_true", help="Run a tiny smoke test: 8 samples, 1 epoch.")
     parser.add_argument("--overwrite", action="store_true")
@@ -114,6 +118,10 @@ def main() -> None:
             batch_size=args.batch_size,
             epochs=args.epochs,
             lr=1e-4,
+            decoder_lr=args.decoder_lr,
+            encoder_lr=args.encoder_lr,
+            weight_decay=args.weight_decay,
+            unfreeze_epoch=args.unfreeze_epoch,
             f_threshold=0.05,
             best_metric="val_chamfer_distance",
             device=args.device,
