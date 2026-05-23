@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
         description="Run the Pix3D preprocessing and baseline training workflow."
     )
     parser.add_argument("--raw-dir", default="data/raw/pix3d")
-    parser.add_argument("--processed-dir", default="data/processed")
+    parser.add_argument("--processed-dir", default="data/processed_2048")
     parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)

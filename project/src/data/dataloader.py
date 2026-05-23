@@ -19,8 +19,6 @@ from torch.utils.data import Dataset
 #
 
 
-
-
 def normalize_points(points: np.ndarray) -> np.ndarray:
     points = points.astype(np.float32)
     points = points - points.mean(axis=0, keepdims=True)
@@ -126,6 +124,48 @@ class Pix3DDataset(Dataset):
         arr = np.transpose(arr, (2, 0, 1))
         return torch.from_numpy(arr)
 
+def _resolve_existing_flags(
+    items: pd.DataFrame,
+    processed_dir: Path,
+    file_columns: list[str],
+) -> pd.DataFrame:
+    items = items.copy()
+
+    for column in file_columns:
+        flag_column = f"_{column}_exists"
+        items[flag_column] = items[column].apply(
+            lambda path: (processed_dir / str(path)).is_file()
+        )
+
+    return items
+
+
+def _raise_if_missing_files(
+    items: pd.DataFrame,
+    split: str,
+    processed_dir: Path,
+    file_columns: list[str],
+) -> None:
+    missing_parts = []
+
+    for column in file_columns:
+        flag_column = f"_{column}_exists"
+        missing_rows = items[~items[flag_column]]
+
+        if len(missing_rows) > 0:
+            examples = missing_rows[column].head(10).tolist()
+            missing_parts.append(
+                f"{column}: missing {len(missing_rows)}/{len(items)} files\n"
+                f"examples: {examples}"
+            )
+
+    if missing_parts:
+        raise FileNotFoundError(
+            f"Missing processed dataset files in split='{split}'.\n"
+            f"processed_dir={processed_dir}\n\n"
+            + "\n\n".join(missing_parts)
+            + "\n\nFix: run build_processed_dataset again, or use the correct --processed-dir."
+        )
 
 class ProcessedPix3DDataset(Dataset):
     def __init__(
@@ -136,6 +176,7 @@ class ProcessedPix3DDataset(Dataset):
         max_samples=None,
         transform=None,
         require_files=True,
+        allow_missing_files=False,
         expected_num_points: int | None = None,
     ):
         self.processed_dir = Path(processed_dir)
@@ -149,35 +190,96 @@ class ProcessedPix3DDataset(Dataset):
             raise FileNotFoundError(f"Split file not found: {split_path}")
 
         items = pd.read_csv(split_path)
-        if self.categories:
-            items = items[items["category"].isin(self.categories)]
+        original_count = len(items)
 
-        required_columns = ["processed_image", "pointcloud", "category"]
+        if self.categories:
+            items = items[items["category"].isin(self.categories)].copy()
+
+        after_category_count = len(items)
+
+        required_columns = [
+            "processed_image",
+            "processed_mask",
+            "pointcloud",
+            "category",
+        ]
         missing_columns = [col for col in required_columns if col not in items.columns]
         if missing_columns:
             raise KeyError(f"Split file is missing columns: {missing_columns}")
 
+        file_columns = [
+            "processed_image",
+            "processed_mask",
+            "pointcloud",
+        ]
+
         if require_files:
-            items = items[
-                items["processed_image"].apply(lambda path: (self.processed_dir / str(path)).is_file())
-                & items["pointcloud"].apply(lambda path: (self.processed_dir / str(path)).is_file())
-            ]
+            items = _resolve_existing_flags(
+                items=items,
+                processed_dir=self.processed_dir,
+                file_columns=file_columns,
+            )
+
+            if not allow_missing_files:
+                _raise_if_missing_files(
+                    items=items,
+                    split=split,
+                    processed_dir=self.processed_dir,
+                    file_columns=file_columns,
+                )
+
+            before_filter_count = len(items)
+
+            keep_mask = True
+            for column in file_columns:
+                keep_mask = keep_mask & items[f"_{column}_exists"]
+
+            items = items[keep_mask].copy()
+            after_filter_count = len(items)
+
+            if before_filter_count != after_filter_count:
+                print(
+                    f"Warning: split='{split}' filtered missing files: "
+                    f"{before_filter_count} -> {after_filter_count}",
+                    flush=True,
+                )
+
+        if len(items) == 0:
+            raise ValueError(
+                f"No usable samples left in split='{split}'. "
+                f"original={original_count}, after_category_filter={after_category_count}. "
+                f"Check processed_dir={self.processed_dir}"
+            )
 
         if max_samples is not None:
-            items = items.head(max_samples)
+            items = items.head(max_samples).copy()
+
+        internal_cols = [col for col in items.columns if col.startswith("_") and col.endswith("_exists")]
+        if internal_cols:
+            items = items.drop(columns=internal_cols)
 
         self.items = items.reset_index(drop=True)
 
+        print(
+            f"Loaded ProcessedPix3DDataset split='{split}': "
+            f"original={original_count}, "
+            f"after_category_filter={after_category_count}, "
+            f"final={len(self.items)}, "
+            f"processed_dir={self.processed_dir}",
+            flush=True,
+        )
     def __len__(self):
         return len(self.items)
 
     def __getitem__(self, idx):
         item = self.items.iloc[idx]
+
         image_path = self.processed_dir / str(item["processed_image"])
         pointcloud_path = self.processed_dir / str(item["pointcloud"])
 
         image = Pix3DDataset._load_image_safely(image_path, mode="RGB")
         image_tensor = Pix3DDataset._to_tensor(image)
+
         if self.transform:
             image_tensor = self.transform(image_tensor)
 
@@ -204,6 +306,7 @@ class ProcessedPix3DDataset(Dataset):
             sample["model_uid"] = str(item["model_uid"])
         if "model" in item:
             sample["model_path"] = str(item["model"])
+
         return sample
 
 
