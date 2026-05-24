@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
 
 # Ghi chu:
 # File nay la training pipeline cho bai toan single-view 3D reconstruction.
@@ -114,6 +115,16 @@ def model_points(model, images: torch.Tensor) -> torch.Tensor:
     return output.points if hasattr(output, "points") else output
 
 
+class AddGaussianNoise:
+    def __init__(self, std: float = 0.0):
+        self.std = max(0.0, float(std))
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.std <= 0:
+            return tensor
+        return torch.clamp(tensor + torch.randn_like(tensor) * self.std, 0.0, 1.0)
+
+
 def train_one_epoch(model, dataloader, optimizer, device):
     model.train()
     total_loss = 0.0
@@ -194,10 +205,39 @@ def parse_args():
     parser.add_argument("--encoder-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument(
+        "--augment",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply train-only image augmentation for processed datasets.",
+    )
+    parser.add_argument("--augment-brightness", type=float, default=0.15)
+    parser.add_argument("--augment-contrast", type=float, default=0.15)
+    parser.add_argument("--augment-noise-std", type=float, default=0.01)
+    parser.add_argument("--augment-erasing-prob", type=float, default=0.10)
+    parser.add_argument("--augment-erasing-scale", type=float, default=0.12)
+    parser.add_argument(
         "--unfreeze-epoch",
         type=int,
         default=None,
         help="Absolute epoch at which to unfreeze the ResNet encoder. Omit to keep the initial freeze setting.",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=8,
+        help="Stop after this many epochs without a meaningful validation improvement.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=1e-4,
+        help="Minimum validation improvement required to reset early-stopping patience.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-epochs",
+        type=int,
+        default=12,
+        help="Minimum epochs to run in this invocation before early stopping can trigger.",
     )
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument(
@@ -242,9 +282,19 @@ def parse_args():
     parser.add_argument("--max-plot-points", type=int, default=2048)
     parser.set_defaults(resume=True)
     args = parser.parse_args()
-    for field in ("max_samples", "val_max_samples", "eval_max_samples", "unfreeze_epoch"):
+    for field in (
+        "max_samples",
+        "val_max_samples",
+        "eval_max_samples",
+        "unfreeze_epoch",
+    ):
         if getattr(args, field) is not None and getattr(args, field) < 0:
             setattr(args, field, None)
+    for field in ("early_stopping_patience", "early_stopping_min_epochs"):
+        if getattr(args, field) is not None and getattr(args, field) < 0:
+            setattr(args, field, 0)
+    if args.early_stopping_min_delta < 0:
+        args.early_stopping_min_delta = 0.0
     return args
 
 
@@ -280,6 +330,9 @@ def build_checkpoint(
         "encoder_lr": getattr(args, "encoder_lr", None),
         "weight_decay": getattr(args, "weight_decay", 0.0),
         "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
+        "early_stopping_patience": getattr(args, "early_stopping_patience", 0),
+        "early_stopping_min_delta": getattr(args, "early_stopping_min_delta", 0.0),
+        "early_stopping_min_epochs": getattr(args, "early_stopping_min_epochs", 0),
         "dataset_mode": args.dataset_mode,
         "split": args.split,
         "val_split": getattr(args, "val_split", None),
@@ -297,12 +350,12 @@ def build_checkpoint(
     return checkpoint
 
 
-def is_better_score(metric_name, score, best_score):
+def is_better_score(metric_name, score, best_score, min_delta: float = 0.0):
     if best_score is None:
         return True
     if metric_name == "val_chamfer_distance":
-        return score < best_score
-    return score > best_score
+        return score < best_score - min_delta
+    return score > best_score + min_delta
 
 
 def resolve_resume_checkpoint(args, checkpoint_dir: Path) -> Path | None:
@@ -665,6 +718,28 @@ def run_training(args):
         args.weight_decay = 1e-4
     if not hasattr(args, "unfreeze_epoch"):
         args.unfreeze_epoch = None
+    if not hasattr(args, "augment"):
+        args.augment = True
+    if not hasattr(args, "augment_brightness"):
+        args.augment_brightness = 0.15
+    if not hasattr(args, "augment_contrast"):
+        args.augment_contrast = 0.15
+    if not hasattr(args, "augment_noise_std"):
+        args.augment_noise_std = 0.01
+    if not hasattr(args, "augment_erasing_prob"):
+        args.augment_erasing_prob = 0.10
+    if not hasattr(args, "augment_erasing_scale"):
+        args.augment_erasing_scale = 0.12
+    if not hasattr(args, "early_stopping_patience"):
+        args.early_stopping_patience = 8
+    if not hasattr(args, "early_stopping_min_delta"):
+        args.early_stopping_min_delta = 1e-4
+    if not hasattr(args, "early_stopping_min_epochs"):
+        args.early_stopping_min_epochs = 12
+
+    args.early_stopping_patience = max(0, int(args.early_stopping_patience or 0))
+    args.early_stopping_min_delta = max(0.0, float(args.early_stopping_min_delta or 0.0))
+    args.early_stopping_min_epochs = max(0, int(args.early_stopping_min_epochs or 0))
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -685,16 +760,53 @@ def run_training(args):
     if args.dataset_mode == "processed":
         split_validation = validate_processed_splits(processed_dir, args.split, args.val_split)
         logger.info("Validated processed splits: %s", split_validation)
+
+        train_transform = None
+        if args.augment:
+            erasing_scale_max = min(1.0, max(0.02, float(args.augment_erasing_scale)))
+            transform_steps = [
+                transforms.ToPILImage(),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(
+                    brightness=max(0.0, float(args.augment_brightness)),
+                    contrast=max(0.0, float(args.augment_contrast)),
+                    saturation=0.2,
+                ),
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
+                transforms.ToTensor(),
+                AddGaussianNoise(std=float(args.augment_noise_std)),
+            ]
+            if float(args.augment_erasing_prob) > 0:
+                transform_steps.append(
+                    transforms.RandomErasing(
+                        p=min(1.0, max(0.0, float(args.augment_erasing_prob))),
+                        scale=(0.02, erasing_scale_max),
+                    )
+                )
+            train_transform = transforms.Compose(transform_steps)
+            logger.info(
+                "Train augmentation enabled: brightness=%s contrast=%s noise_std=%s erasing_prob=%s erasing_scale_max=%s",
+                args.augment_brightness,
+                args.augment_contrast,
+                args.augment_noise_std,
+                args.augment_erasing_prob,
+                erasing_scale_max,
+            )
+        else:
+            logger.info("Train augmentation disabled.")
+
         train_dataset = ProcessedPix3DDataset(
             processed_dir=processed_dir,
             split=args.split,
             categories=args.categories,
             max_samples=args.max_samples,
             expected_num_points=args.num_points,
+            transform=train_transform,
         )
         validation_max_samples = args.val_max_samples
         if validation_max_samples is None:
             validation_max_samples = args.max_samples
+        # Val dataset khong dung augmentation
         val_dataset = ProcessedPix3DDataset(
             processed_dir=processed_dir,
             split=args.val_split,
@@ -822,7 +934,21 @@ def run_training(args):
     last_metrics_epoch = read_last_metrics_epoch(metrics_path) if resume_checkpoint_path else 0
     checkpoint_epoch = int(resumed_from_epoch or 0)
     start_epoch = max(last_metrics_epoch, checkpoint_epoch) + 1
-    end_epoch = start_epoch + args.epochs - 1
+    planned_end_epoch = start_epoch + args.epochs - 1
+    last_completed_epoch = start_epoch - 1
+    early_stopped = False
+    early_stop_epoch = None
+    epochs_without_improvement = 0
+    early_stopping_score = best_score
+
+    if args.early_stopping_patience > 0:
+        logger.info(
+            "Early stopping enabled: patience=%s min_delta=%s min_epochs=%s metric=%s",
+            args.early_stopping_patience,
+            args.early_stopping_min_delta,
+            args.early_stopping_min_epochs,
+            args.best_metric,
+        )
 
     metrics_mode = "a" if resume_checkpoint_path is not None and metrics_path.is_file() else "w"
     with metrics_path.open(metrics_mode, newline="", encoding="utf-8") as file:
@@ -830,7 +956,8 @@ def run_training(args):
         if metrics_mode == "w":
             writer.writeheader()
 
-        for epoch in range(start_epoch, end_epoch + 1):
+        for epoch in range(start_epoch, planned_end_epoch + 1):
+            last_completed_epoch = epoch
             if (
                 not encoder_unfrozen
                 and args.unfreeze_epoch is not None
@@ -857,9 +984,17 @@ def run_training(args):
                 "val_f_score": val_metrics["f_score"],
             }
             writer.writerow(row)
+            file.flush()
 
             current_score = row[args.best_metric]
-            if is_better_score(args.best_metric, current_score, best_score):
+            is_best_score = is_better_score(args.best_metric, current_score, best_score)
+            is_early_stopping_improvement = is_better_score(
+                args.best_metric,
+                current_score,
+                early_stopping_score,
+                min_delta=args.early_stopping_min_delta,
+            )
+            if is_best_score:
                 best_score = current_score
                 best_epoch = epoch
                 args.encoder_unfrozen = encoder_unfrozen
@@ -882,6 +1017,12 @@ def run_training(args):
             else:
                 best_text = ""
 
+            if is_early_stopping_improvement:
+                early_stopping_score = current_score
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
             message = (
                 f"epoch={epoch} "
                 f"train_loss={train_loss:.6f} "
@@ -889,16 +1030,36 @@ def run_training(args):
                 f"val_f={val_metrics['f_score']:.4f}"
                 f"{best_text}"
             )
+            if args.early_stopping_patience > 0:
+                message += f" patience={epochs_without_improvement}/{args.early_stopping_patience}"
             print(message)
             logger.info(message)
 
+            epochs_run = epoch - start_epoch + 1
+            if (
+                args.early_stopping_patience > 0
+                and epochs_run >= args.early_stopping_min_epochs
+                and epochs_without_improvement >= args.early_stopping_patience
+            ):
+                early_stopped = True
+                early_stop_epoch = epoch
+                message = (
+                    f"Early stopping at epoch={epoch}: no {args.best_metric} improvement "
+                    f">= {args.early_stopping_min_delta} for {epochs_without_improvement} epochs. "
+                    f"Best epoch={best_epoch}, best_score={best_score}."
+                )
+                print(message)
+                logger.info(message)
+                break
+
     checkpoint_path = checkpoint_dir / "resnet_pointcloud_net.pt"
     args.encoder_unfrozen = encoder_unfrozen
+    final_epoch = max(last_completed_epoch, start_epoch - 1)
     torch.save(
         build_checkpoint(
             model=model,
             args=args,
-            epoch=end_epoch,
+            epoch=final_epoch,
             best_metric=args.best_metric,
             best_score=best_score,
             best_epoch=best_epoch,
@@ -945,7 +1106,15 @@ def run_training(args):
         "batch_size": args.batch_size,
         "epochs": args.epochs,
         "start_epoch": start_epoch,
-        "end_epoch": end_epoch,
+        "end_epoch": final_epoch,
+        "planned_end_epoch": planned_end_epoch,
+        "early_stopping_enabled": args.early_stopping_patience > 0,
+        "early_stopping_patience": args.early_stopping_patience,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "early_stopping_min_epochs": args.early_stopping_min_epochs,
+        "early_stopped": early_stopped,
+        "early_stop_epoch": early_stop_epoch,
+        "epochs_without_improvement": epochs_without_improvement,
         "learning_rate": args.lr,
         "device": str(device),
         "resume_enabled": getattr(args, "resume", True),
@@ -997,7 +1166,10 @@ def run_training(args):
         "resumed_from_checkpoint": resume_checkpoint_path,
         "resumed_from_epoch": resumed_from_epoch,
         "start_epoch": start_epoch,
-        "end_epoch": end_epoch,
+        "end_epoch": final_epoch,
+        "planned_end_epoch": planned_end_epoch,
+        "early_stopped": early_stopped,
+        "early_stop_epoch": early_stop_epoch,
         "optimizer_resumed": optimizer_resumed,
     }
 

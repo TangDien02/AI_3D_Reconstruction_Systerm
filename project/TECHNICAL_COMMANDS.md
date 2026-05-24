@@ -122,6 +122,14 @@ python -m src.training.training_pipeline --dataset-mode processed --categories c
 
 Neu chi can smoke test nhanh, them `--max-samples 256`.
 
+Early stopping duoc bat mac dinh voi `patience=8`, `min_delta=0.0001`, `min_epochs=12`.
+Co the tinh chinh patience theo validation metric neu can:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --categories chair --epochs 100 --batch-size 2 --output-dir results/chair_resnet_baseline --early-stopping-patience 8 --early-stopping-min-delta 0.0001 --early-stopping-min-epochs 12
+```
+
 Artifact duoc luu vao:
 
 ```text

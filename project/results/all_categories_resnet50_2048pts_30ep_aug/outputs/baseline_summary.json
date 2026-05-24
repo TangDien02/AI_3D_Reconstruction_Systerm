@@ -1,6 +1,6 @@
 {
   "dataset_mode": "processed",
-  "processed_dir": "data/processed_all_categories_2048",
+  "processed_dir": "data/processed_2048",
   "split": "train",
   "val_split": "val",
   "categories": [

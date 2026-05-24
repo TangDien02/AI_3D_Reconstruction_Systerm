@@ -40,7 +40,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-lr", type=float, default=None)
     parser.add_argument("--encoder-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--augment",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply train-only image augmentation. Validation/test remain unchanged.",
+    )
+    parser.add_argument("--augment-brightness", type=float, default=0.15)
+    parser.add_argument("--augment-contrast", type=float, default=0.15)
+    parser.add_argument("--augment-noise-std", type=float, default=0.01)
+    parser.add_argument("--augment-erasing-prob", type=float, default=0.10)
+    parser.add_argument("--augment-erasing-scale", type=float, default=0.12)
     parser.add_argument("--unfreeze-epoch", type=int, default=10)
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=8,
+        help="Stop training after this many epochs without validation improvement.",
+    )
+    parser.add_argument("--early-stopping-min-delta", type=float, default=1e-4)
+    parser.add_argument("--early-stopping-min-epochs", type=int, default=12)
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument(
@@ -77,6 +96,12 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.max_samples is not None and args.max_samples < 0:
         args.max_samples = None
+    if args.early_stopping_patience < 0:
+        args.early_stopping_patience = 0
+    if args.early_stopping_min_epochs < 0:
+        args.early_stopping_min_epochs = 0
+    if args.early_stopping_min_delta < 0:
+        args.early_stopping_min_delta = 0.0
     return args
 
 
@@ -153,7 +178,16 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         decoder_lr=args.decoder_lr,
         encoder_lr=args.encoder_lr,
         weight_decay=args.weight_decay,
+        augment=args.augment,
+        augment_brightness=args.augment_brightness,
+        augment_contrast=args.augment_contrast,
+        augment_noise_std=args.augment_noise_std,
+        augment_erasing_prob=args.augment_erasing_prob,
+        augment_erasing_scale=args.augment_erasing_scale,
         unfreeze_epoch=args.unfreeze_epoch,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta,
+        early_stopping_min_epochs=args.early_stopping_min_epochs,
         f_threshold=args.f_threshold,
         best_metric=args.best_metric,
         device=args.device,

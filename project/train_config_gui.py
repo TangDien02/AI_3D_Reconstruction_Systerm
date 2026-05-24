@@ -100,6 +100,10 @@ class TrainingConfigGui(tk.Tk):
         self.encoder_lr_var = tk.StringVar(value="0.00001")
         self.weight_decay_var = tk.StringVar(value="0.0001")
         self.unfreeze_epoch_var = tk.StringVar(value="10")
+        self.augment_var = tk.BooleanVar(value=True)
+        self.early_stopping_patience_var = tk.StringVar(value="8")
+        self.early_stopping_min_delta_var = tk.StringVar(value="0.0001")
+        self.early_stopping_min_epochs_var = tk.StringVar(value="12")
         self.num_points_var = tk.StringVar(value="2048")
         self.image_size_var = tk.StringVar(value="224")
         self.encoder_name_var = tk.StringVar(value="resnet18")
@@ -203,22 +207,34 @@ class TrainingConfigGui(tk.Tk):
             ("Encoder LR", self.encoder_lr_var),
             ("Weight decay", self.weight_decay_var),
             ("Unfreeze epoch", self.unfreeze_epoch_var),
+            ("Early stop patience", self.early_stopping_patience_var),
+            ("Early stop min epochs", self.early_stopping_min_epochs_var),
+            ("Early stop min delta", self.early_stopping_min_delta_var),
         ]
         for row, (label, variable) in enumerate(fields):
             ttk.Label(train_frame, text=label).grid(row=row, column=0, sticky=tk.W, padx=8, pady=5)
             ttk.Entry(train_frame, textvariable=variable, width=16).grid(row=row, column=1, sticky=tk.W, padx=8, pady=5)
 
-        ttk.Label(train_frame, text="Best metric").grid(row=8, column=0, sticky=tk.W, padx=8, pady=5)
+        metric_row = len(fields)
+        ttk.Label(train_frame, text="Best metric").grid(row=metric_row, column=0, sticky=tk.W, padx=8, pady=5)
         ttk.Combobox(
             train_frame,
             textvariable=self.best_metric_var,
             values=["val_chamfer_distance", "val_f_score"],
             state="readonly",
             width=24,
-        ).grid(row=8, column=1, sticky=tk.W, padx=8, pady=5)
+        ).grid(row=metric_row, column=1, sticky=tk.W, padx=8, pady=5)
 
         ttk.Checkbutton(train_frame, text="Force CPU", variable=self.force_cpu_var).grid(
-            row=9,
+            row=metric_row + 1,
+            column=0,
+            columnspan=2,
+            sticky=tk.W,
+            padx=8,
+            pady=5,
+        )
+        ttk.Checkbutton(train_frame, text="Train augmentation", variable=self.augment_var).grid(
+            row=metric_row + 2,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -370,6 +386,8 @@ class TrainingConfigGui(tk.Tk):
             "epochs": self.epochs_var,
             "batch_size": self.batch_size_var,
             "unfreeze_epoch": self.unfreeze_epoch_var,
+            "early_stopping_patience": self.early_stopping_patience_var,
+            "early_stopping_min_epochs": self.early_stopping_min_epochs_var,
             "num_points": self.num_points_var,
             "image_size": self.image_size_var,
             "feature_dim": self.feature_dim_var,
@@ -379,12 +397,18 @@ class TrainingConfigGui(tk.Tk):
             if key in {"max_samples", "unfreeze_epoch"} and text == "":
                 config[key] = None
                 continue
+            if key in {"early_stopping_patience", "early_stopping_min_epochs"} and text == "":
+                config[key] = 0
+                continue
             try:
                 value = int(text)
             except ValueError:
                 errors.append(f"{key} phai la so nguyen.")
                 continue
-            if value <= 0:
+            if key in {"early_stopping_patience", "early_stopping_min_epochs"}:
+                if value < 0:
+                    errors.append(f"{key} phai lon hon hoac bang 0.")
+            elif value <= 0:
                 errors.append(f"{key} phai lon hon 0.")
             config[key] = value
 
@@ -399,13 +423,21 @@ class TrainingConfigGui(tk.Tk):
             "decoder_lr": self.decoder_lr_var,
             "encoder_lr": self.encoder_lr_var,
             "weight_decay": self.weight_decay_var,
+            "early_stopping_min_delta": self.early_stopping_min_delta_var,
         }.items():
+            text = variable.get().strip()
+            if key == "early_stopping_min_delta" and text == "":
+                config[key] = 0.0
+                continue
             try:
-                value = float(variable.get().strip())
+                value = float(text)
             except ValueError:
                 errors.append(f"{key} phai la so.")
                 continue
-            if value <= 0:
+            if key == "early_stopping_min_delta":
+                if value < 0:
+                    errors.append(f"{key} phai lon hon hoac bang 0.")
+            elif value <= 0:
                 errors.append(f"{key} phai lon hon 0.")
             config[key] = value
         return config, errors
@@ -518,6 +550,16 @@ class TrainingConfigGui(tk.Tk):
         infos.append("metrics/training_metrics.csv, metrics/test_summary.json, metrics/test_batch_metrics.csv")
         infos.append("outputs/training_curves.png, outputs/test_summary_metrics.png, outputs/test_batch_metrics.png")
         infos.append("outputs/comparison/<sample_id>_comparison.png")
+        infos.append(
+            "Train augmentation: "
+            + ("enabled on train split only; val/test clean." if self.augment_var.get() else "disabled.")
+        )
+        infos.append(
+            "Early stopping: "
+            f"patience={numeric.get('early_stopping_patience', 8)}, "
+            f"min_delta={numeric.get('early_stopping_min_delta', 0.0001)}, "
+            f"min_epochs={numeric.get('early_stopping_min_epochs', 12)}."
+        )
 
         self.write_status(errors, warnings, infos)
         if show_dialog:
@@ -589,9 +631,16 @@ class TrainingConfigGui(tk.Tk):
             self.selected_device_name(),
             "--best-metric",
             self.best_metric_var.get().strip(),
+            "--early-stopping-patience",
+            self.early_stopping_patience_var.get().strip() or "8",
+            "--early-stopping-min-delta",
+            self.early_stopping_min_delta_var.get().strip() or "0.0001",
+            "--early-stopping-min-epochs",
+            self.early_stopping_min_epochs_var.get().strip() or "12",
         ]
         command.append("--pretrained" if self.pretrained_var.get() else "--no-pretrained")
         command.append("--freeze-encoder" if self.freeze_encoder_var.get() else "--no-freeze-encoder")
+        command.append("--augment" if self.augment_var.get() else "--no-augment")
         if self.max_samples_var.get().strip():
             command.extend(["--max-samples", self.max_samples_var.get().strip()])
         if self.unfreeze_epoch_var.get().strip():

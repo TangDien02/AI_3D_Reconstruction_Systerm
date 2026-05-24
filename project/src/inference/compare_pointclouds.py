@@ -173,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt",
     )
-    parser.add_argument("--processed-dir", default="data/processed_all_categories_2048")
+    parser.add_argument("--processed-dir", default="data/processed_2048")
     parser.add_argument("--split", default="val", choices=["train", "val", "test"])
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--index", type=int, default=0)
