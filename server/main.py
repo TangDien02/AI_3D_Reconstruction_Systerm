@@ -37,7 +37,12 @@ DETECTION_CONFIDENCE = 0.60
 DETECTION_IMAGE_SIZE = 416
 DETECTION_MAX_OBJECTS = 8
 DEFAULT_BASELINE_CHECKPOINT = (
-    PROJECT_DIR / "results" / "chair_resnet_baseline" / "outputs" / "checkpoints" / "best_model.pt"
+    PROJECT_DIR
+    / "results"
+    / "all_categories_resnet50_2048pts_30ep_aug"
+    / "outputs"
+    / "checkpoints"
+    / "best_model.pt"
 )
 BASELINE_CHECKPOINT = Path(os.environ.get("RECON_BASELINE_CHECKPOINT", DEFAULT_BASELINE_CHECKPOINT))
 if not BASELINE_CHECKPOINT.is_absolute():

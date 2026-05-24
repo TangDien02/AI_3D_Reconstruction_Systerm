@@ -109,12 +109,12 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate the baseline checkpoint on a processed split.")
-    parser.add_argument("--processed-dir", default="data/processed")
+    parser.add_argument("--processed-dir", default="data/processed_all_categories_2048")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt",
+        default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt",
     )
-    parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
+    parser.add_argument("--output-dir", default="results/all_categories_resnet50_2048pts_30ep_aug")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)

@@ -1,0 +1,22 @@
+{
+  "split": "test",
+  "categories": [
+    "bed",
+    "bookcase",
+    "chair",
+    "desk",
+    "misc",
+    "sofa",
+    "table",
+    "tool",
+    "wardrobe"
+  ],
+  "samples": 1967,
+  "batch_size": 4,
+  "checkpoint_path": "results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt",
+  "chamfer_distance": 0.027645682944453603,
+  "f_score": 0.446668162938397,
+  "precision": 0.4549108135954765,
+  "recall": 0.44248334830887254,
+  "batch_metrics_path": "results/all_categories_resnet50_2048pts_30ep_aug/metrics/test_batch_metrics.csv"
+}

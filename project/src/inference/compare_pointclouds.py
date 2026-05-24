@@ -169,13 +169,16 @@ def compare_sample(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize predicted and ground-truth point clouds.")
-    parser.add_argument("--checkpoint", default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt")
-    parser.add_argument("--processed-dir", default="data/processed")
+    parser.add_argument(
+        "--checkpoint",
+        default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt",
+    )
+    parser.add_argument("--processed-dir", default="data/processed_all_categories_2048")
     parser.add_argument("--split", default="val", choices=["train", "val", "test"])
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--output-dir", default="results/chair_resnet_baseline/outputs/comparison")
+    parser.add_argument("--output-dir", default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/comparison")
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--max-plot-points", type=int, default=2048)
     parser.add_argument("--device", default=None, help="Use cuda, cpu, or leave empty for auto.")

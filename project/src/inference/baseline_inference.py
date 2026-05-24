@@ -97,10 +97,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", required=True, help="Input RGB image path.")
     parser.add_argument(
         "--checkpoint",
-        default="results/chair_resnet_baseline/outputs/checkpoints/best_model.pt",
+        default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt",
         help="Baseline checkpoint path relative to project/ or absolute.",
     )
-    parser.add_argument("--output-dir", default="results/chair_resnet_baseline/outputs/inference")
+    parser.add_argument("--output-dir", default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/inference")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--name", default=None, help="Optional output basename.")
     parser.add_argument("--no-plot", action="store_true")
