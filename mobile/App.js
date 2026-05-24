@@ -13,10 +13,10 @@ import {
 } from 'react-native';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.1.3:8000';
-const DETECT_FRAME_WIDTH = 416;
-const DETECT_CAPTURE_QUALITY = 0.25;
-const DETECT_UPLOAD_COMPRESS = 0.45;
-const DETECT_COOLDOWN_MS = 120;
+const DETECT_FRAME_WIDTH = 640;
+const DETECT_CAPTURE_QUALITY = 0.5;
+const DETECT_UPLOAD_COMPRESS = 0.65;
+const DETECT_COOLDOWN_MS = 180;
 const RECON_CAPTURE_QUALITY = 0.92;
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',

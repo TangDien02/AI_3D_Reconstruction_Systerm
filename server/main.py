@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import shutil
 import sys
 import time
+from datetime import datetime
 from threading import Lock
 import uuid
 from pathlib import Path
@@ -33,9 +36,26 @@ UPLOAD_DIR = SERVER_DIR / "uploads"
 MODEL_OUTPUT_DIR = SERVER_DIR / "models"
 SEGMENT_OUTPUT_DIR = SERVER_DIR / "segment_outputs"
 YOLO_WEIGHTS = SERVER_DIR / "weights" / "yolo26n-seg.pt"
-DETECTION_CONFIDENCE = 0.60
-DETECTION_IMAGE_SIZE = 416
-DETECTION_MAX_OBJECTS = 8
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+DETECTION_CONFIDENCE = env_float("YOLO_DETECTION_CONFIDENCE", 0.20)
+DETECTION_IMAGE_SIZE = env_int("YOLO_DETECTION_IMAGE_SIZE", 640)
+DETECTION_MAX_OBJECTS = env_int("YOLO_DETECTION_MAX_OBJECTS", 20)
+DETECTION_IOU = env_float("YOLO_DETECTION_IOU", 0.45)
 DEFAULT_BASELINE_CHECKPOINT = (
     PROJECT_DIR
     / "results"
@@ -141,12 +161,38 @@ def make_mask_from_polygon(
     return mask
 
 
+def safe_slug(value: object, default: str = "object") -> str:
+    text = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value or "").strip().lower()).strip("-")
+    return (text[:48] or default).strip("-") or default
+
+
+def build_job_id(label: object = "object") -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{timestamp}_{safe_slug(label)}_{uuid.uuid4().hex[:8]}"
+
+
+def job_output_dir(root_dir: Path, job_id: str) -> Path:
+    date_part = job_id[:8] if len(job_id) >= 8 else datetime.now().strftime("%Y%m%d")
+    return root_dir / date_part / job_id
+
+
+def mounted_url(root_dir: Path, mount_path: str, path: Path) -> str:
+    relative_path = Path(path).relative_to(root_dir).as_posix()
+    return f"{mount_path}/{relative_path}"
+
+
 def to_relative_url(path: Path) -> str:
-    return f"/segment-outputs/{path.name}"
+    return mounted_url(SEGMENT_OUTPUT_DIR, "/segment-outputs", path)
 
 
 def to_model_url(path: Path) -> str:
-    return f"/models/{path.name}"
+    return mounted_url(MODEL_OUTPUT_DIR, "/models", path)
+
+
+def write_json(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 async def read_upload_image(image: UploadFile) -> Image.Image:
@@ -177,6 +223,7 @@ def detect_and_select_object(
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            iou=DETECTION_IOU,
             device=get_yolo_device(),
             verbose=False,
         )
@@ -262,12 +309,14 @@ def save_segment_artifacts(
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rectangle(crop_box, outline=(163, 230, 53), width=4)
 
-    original_path = SEGMENT_OUTPUT_DIR / f"{job_id}_original.jpg"
-    mask_path = SEGMENT_OUTPUT_DIR / f"{job_id}_mask.png"
-    crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_crop.jpg"
-    masked_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_masked_crop.png"
-    transparent_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_transparent_crop.png"
-    overlay_path = SEGMENT_OUTPUT_DIR / f"{job_id}_overlay.jpg"
+    segment_dir = job_output_dir(SEGMENT_OUTPUT_DIR, job_id)
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    original_path = segment_dir / "original.jpg"
+    mask_path = segment_dir / "mask.png"
+    crop_path = segment_dir / "crop.jpg"
+    masked_crop_path = segment_dir / "masked_crop.png"
+    transparent_crop_path = segment_dir / "transparent_crop.png"
+    overlay_path = segment_dir / "overlay.jpg"
 
     pil_image.save(original_path, quality=92)
     full_mask.save(mask_path)
@@ -288,8 +337,9 @@ def save_segment_artifacts(
         },
     }
 
-    return {
+    segment_payload = {
         "selected": selected_response,
+        "output_dir": str(segment_dir),
         "files": {
             "original": to_relative_url(original_path),
             "mask": to_relative_url(mask_path),
@@ -298,10 +348,21 @@ def save_segment_artifacts(
             "transparent_crop": to_relative_url(transparent_crop_path),
             "overlay": to_relative_url(overlay_path),
         },
-    }, masked_crop_path
+        "paths": {
+            "output_dir": str(segment_dir),
+            "original": str(original_path),
+            "mask": str(mask_path),
+            "crop": str(crop_path),
+            "masked_crop": str(masked_crop_path),
+            "transparent_crop": str(transparent_crop_path),
+            "overlay": str(overlay_path),
+        },
+    }
+    write_json(segment_dir / "segment_summary.json", segment_payload)
+    return segment_payload, masked_crop_path
 
 
-def save_reconstruction_artifacts(input_path: Path, job_id: str) -> dict:
+def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
     try:
         from src.inference.baseline_inference import predict_pointcloud
         from src.utils.mesh_export import save_pointcloud_obj
@@ -313,16 +374,22 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str) -> dict:
             detail=f"Inference dependencies are not ready: {exc}",
         ) from exc
 
+    output_dir = job_output_dir(MODEL_OUTPUT_DIR, job_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         points, checkpoint = predict_pointcloud(input_path, BASELINE_CHECKPOINT)
-        npy_path = save_pointcloud_npy(points, MODEL_OUTPUT_DIR / f"{job_id}.npy")
-        ply_path = save_pointcloud_ply(points, MODEL_OUTPUT_DIR / f"{job_id}.ply")
-        obj_path, mesh_summary = save_pointcloud_obj(points, MODEL_OUTPUT_DIR / f"{job_id}.obj")
-        preview_path = plot_point_cloud(points, MODEL_OUTPUT_DIR / f"{job_id}.png", title=job_id)
+        npy_path = save_pointcloud_npy(points, output_dir / "pointcloud.npy")
+        ply_path = save_pointcloud_ply(points, output_dir / "pointcloud.ply")
+        obj_path, mesh_summary = save_pointcloud_obj(points, output_dir / "model.obj")
+        preview_path = plot_point_cloud(points, output_dir / "preview.png", title=label or job_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Reconstruction failed: {exc}") from exc
 
-    return {
+    payload = {
+        "job_id": job_id,
+        "label": label,
+        "output_dir": str(output_dir),
         "num_points": int(points.shape[0]),
         "checkpoint": {
             "path": str(BASELINE_CHECKPOINT),
@@ -336,14 +403,19 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str) -> dict:
             "pointcloud_ply": to_model_url(ply_path),
             "mesh_obj": to_model_url(obj_path),
             "preview_png": to_model_url(preview_path),
+            "summary_json": to_model_url(output_dir / "reconstruction_summary.json"),
         },
         "paths": {
+            "output_dir": str(output_dir),
             "pointcloud_npy": str(npy_path),
             "pointcloud_ply": str(ply_path),
             "mesh_obj": str(obj_path),
             "preview_png": str(preview_path),
+            "summary_json": str(output_dir / "reconstruction_summary.json"),
         },
     }
+    write_json(output_dir / "reconstruction_summary.json", payload)
+    return payload
 
 
 @app.on_event("startup")
@@ -356,6 +428,7 @@ def warmup_yolo_model():
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            iou=DETECTION_IOU,
             device=get_yolo_device(),
             verbose=False,
         )
@@ -371,6 +444,12 @@ def health_check():
         "baseline_checkpoint": str(BASELINE_CHECKPOINT),
         "yolo_weights_exists": YOLO_WEIGHTS.is_file(),
         "yolo_device": get_yolo_device(),
+        "detector": {
+            "imgsz": DETECTION_IMAGE_SIZE,
+            "conf": DETECTION_CONFIDENCE,
+            "max_det": DETECTION_MAX_OBJECTS,
+            "iou": DETECTION_IOU,
+        },
         "outputs": {
             "segment_outputs": "/segment-outputs",
             "models": "/models",
@@ -406,6 +485,7 @@ async def segment_object(
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            iou=DETECTION_IOU,
             device=get_yolo_device(),
             verbose=False,
         )
@@ -481,13 +561,15 @@ async def segment_object(
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rectangle(crop_box, outline=(163, 230, 53), width=4)
 
-    job_id = uuid.uuid4().hex
-    original_path = SEGMENT_OUTPUT_DIR / f"{job_id}_original.jpg"
-    mask_path = SEGMENT_OUTPUT_DIR / f"{job_id}_mask.png"
-    crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_crop.jpg"
-    masked_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_masked_crop.png"
-    transparent_crop_path = SEGMENT_OUTPUT_DIR / f"{job_id}_transparent_crop.png"
-    overlay_path = SEGMENT_OUTPUT_DIR / f"{job_id}_overlay.jpg"
+    job_id = build_job_id(selected_detection["label"])
+    segment_dir = job_output_dir(SEGMENT_OUTPUT_DIR, job_id)
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    original_path = segment_dir / "original.jpg"
+    mask_path = segment_dir / "mask.png"
+    crop_path = segment_dir / "crop.jpg"
+    masked_crop_path = segment_dir / "masked_crop.png"
+    transparent_crop_path = segment_dir / "transparent_crop.png"
+    overlay_path = segment_dir / "overlay.jpg"
 
     pil_image.save(original_path, quality=92)
     full_mask.save(mask_path)
@@ -514,10 +596,12 @@ async def segment_object(
         "image_height": image_height,
         "processing_ms": round((time.perf_counter() - started_at) * 1000, 1),
         "selected": selected_response,
+        "output_dir": str(segment_dir),
         "detector": {
             "imgsz": DETECTION_IMAGE_SIZE,
             "conf": DETECTION_CONFIDENCE,
             "max_det": DETECTION_MAX_OBJECTS,
+            "iou": DETECTION_IOU,
             "device": get_yolo_device(),
         },
         "files": {
@@ -527,6 +611,15 @@ async def segment_object(
             "masked_crop": to_relative_url(masked_crop_path),
             "transparent_crop": to_relative_url(transparent_crop_path),
             "overlay": to_relative_url(overlay_path),
+        },
+        "paths": {
+            "output_dir": str(segment_dir),
+            "original": str(original_path),
+            "mask": str(mask_path),
+            "crop": str(crop_path),
+            "masked_crop": str(masked_crop_path),
+            "transparent_crop": str(transparent_crop_path),
+            "overlay": str(overlay_path),
         },
     }
 
@@ -552,6 +645,7 @@ async def detect_frame(image: UploadFile = File(...)):
             conf=DETECTION_CONFIDENCE,
             imgsz=DETECTION_IMAGE_SIZE,
             max_det=DETECTION_MAX_OBJECTS,
+            iou=DETECTION_IOU,
             device=get_yolo_device(),
             verbose=False,
         )
@@ -591,6 +685,7 @@ async def detect_frame(image: UploadFile = File(...)):
             "imgsz": DETECTION_IMAGE_SIZE,
             "conf": DETECTION_CONFIDENCE,
             "max_det": DETECTION_MAX_OBJECTS,
+            "iou": DETECTION_IOU,
             "device": get_yolo_device(),
         },
         "objects": detections,
@@ -646,14 +741,18 @@ async def reconstruct_object(
         bbox_height=bbox_height,
     )
 
-    job_id = uuid.uuid4().hex
+    job_id = build_job_id(selected_detection["label"])
     segment_payload, masked_crop_path = save_segment_artifacts(
         pil_image=pil_image,
         result=result,
         selected_detection=selected_detection,
         job_id=job_id,
     )
-    reconstruction = save_reconstruction_artifacts(masked_crop_path, job_id)
+    reconstruction = save_reconstruction_artifacts(
+        masked_crop_path,
+        job_id,
+        label=selected_detection["label"],
+    )
 
     return {
         "job_id": job_id,
@@ -670,9 +769,7 @@ async def reconstruct_object(
             }
             for detection in detections
         ],
-        "segmentation": {
-            "files": segment_payload["files"],
-        },
+        "segmentation": segment_payload,
         "reconstruction": reconstruction,
     }
 
@@ -685,13 +782,16 @@ async def reconstruct_image(image: UploadFile = File(...)):
             detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
         )
 
-    suffix = Path(image.filename or "input.jpg").suffix or ".jpg"
-    job_id = uuid.uuid4().hex
-    input_path = UPLOAD_DIR / f"{job_id}{suffix}"
+    filename = image.filename or "input.jpg"
+    suffix = Path(filename).suffix or ".jpg"
+    job_id = build_job_id(Path(filename).stem or "image")
+    upload_dir = job_output_dir(UPLOAD_DIR, job_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    input_path = upload_dir / f"input{suffix}"
     with input_path.open("wb") as file:
         shutil.copyfileobj(image.file, file)
 
-    reconstruction = save_reconstruction_artifacts(input_path, job_id)
+    reconstruction = save_reconstruction_artifacts(input_path, job_id, label=Path(filename).stem or "image")
 
     return {
         "job_id": job_id,

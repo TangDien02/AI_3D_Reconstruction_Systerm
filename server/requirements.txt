@@ -2,10 +2,12 @@ fastapi
 uvicorn[standard]
 python-multipart
 numpy
+pandas
 pillow
 matplotlib
 opencv-python
 scipy
+trimesh
 torch
 torchvision
 ultralytics
