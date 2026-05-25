@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-scheduler-patience", type=int, default=5)
     parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
+    parser.add_argument("--chamfer-gt-weight", type=float, default=1.25)
+    parser.add_argument("--repulsion-weight", type=float, default=0.01)
+    parser.add_argument("--repulsion-k", type=int, default=8)
+    parser.add_argument("--repulsion-radius", type=float, default=0.03)
+    parser.add_argument("--repulsion-sample-size", type=int, default=512)
     parser.add_argument(
         "--augment",
         action=argparse.BooleanOptionalAction,
@@ -116,6 +121,16 @@ def parse_args() -> argparse.Namespace:
         args.lr_scheduler_threshold = 0.0
     if args.lr_scheduler_min_lr < 0:
         args.lr_scheduler_min_lr = 0.0
+    if args.chamfer_gt_weight <= 0:
+        args.chamfer_gt_weight = 1.0
+    if args.repulsion_weight < 0:
+        args.repulsion_weight = 0.0
+    if args.repulsion_k < 0:
+        args.repulsion_k = 0
+    if args.repulsion_radius < 0:
+        args.repulsion_radius = 0.0
+    if args.repulsion_sample_size < 0:
+        args.repulsion_sample_size = 0
     return args
 
 
@@ -198,6 +213,11 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         lr_scheduler_patience=args.lr_scheduler_patience,
         lr_scheduler_threshold=args.lr_scheduler_threshold,
         lr_scheduler_min_lr=args.lr_scheduler_min_lr,
+        chamfer_gt_weight=args.chamfer_gt_weight,
+        repulsion_weight=args.repulsion_weight,
+        repulsion_k=args.repulsion_k,
+        repulsion_radius=args.repulsion_radius,
+        repulsion_sample_size=args.repulsion_sample_size,
         augment=args.augment,
         augment_brightness=args.augment_brightness,
         augment_contrast=args.augment_contrast,

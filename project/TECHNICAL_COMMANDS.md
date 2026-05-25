@@ -128,6 +128,8 @@ AMP va ReduceLROnPlateau cung duoc bat mac dinh theo cau hinh an toan:
 ```text
 AMP: tu dong bat khi device=cuda, tu dong tat khi device=cpu
 ReduceLROnPlateau: factor=0.7, patience=5, threshold=0.0001, min_lr=0.000001
+Coverage loss: chamfer_gt_weight=1.25
+Repulsion loss: repulsion_weight=0.01, repulsion_k=8, repulsion_radius=0.03, repulsion_sample_size=512
 ```
 
 Co the tinh chinh patience theo validation metric neu can:
@@ -135,6 +137,13 @@ Co the tinh chinh patience theo validation metric neu can:
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
 python -m src.training.training_pipeline --dataset-mode processed --categories chair --epochs 100 --batch-size 2 --output-dir results/chair_resnet_baseline --early-stopping-patience 8 --early-stopping-min-delta 0.0001 --early-stopping-min-epochs 12 --lr-scheduler plateau --lr-scheduler-patience 5 --lr-scheduler-factor 0.7
+```
+
+Neu point cloud bi thieu coverage hoac bi tum diem, co the tang nhe coverage/repulsion de test:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 30 --batch-size 16 --max-samples 1024 --val-max-samples 256 --encoder-name resnet50 --feature-dim 2048 --num-points 2048 --output-dir results/bench_repulsion_coverage --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.02 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512
 ```
 
 Artifact duoc luu vao:

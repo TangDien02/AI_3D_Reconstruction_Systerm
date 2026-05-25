@@ -33,7 +33,12 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.data.dataloader import Pix3DDataset, ProcessedPix3DDataset
-from src.metrics.losses import chamfer_distance, f_score
+from src.metrics.losses import (
+    chamfer_distance,
+    f_score,
+    point_repulsion_loss,
+    weighted_chamfer_distance,
+)
 from src.models.object_reconstruction import build_object_reconstruction_model
 
 
@@ -139,7 +144,19 @@ class AddGaussianNoise:
         return torch.clamp(tensor + torch.randn_like(tensor) * self.std, 0.0, 1.0)
 
 
-def train_one_epoch(model, dataloader, optimizer, device, amp_enabled=False, grad_scaler=None):
+def train_one_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    amp_enabled=False,
+    grad_scaler=None,
+    chamfer_gt_weight=1.0,
+    repulsion_weight=0.0,
+    repulsion_k=8,
+    repulsion_radius=0.03,
+    repulsion_sample_size=512,
+):
     model.train()
     total_loss = 0.0
 
@@ -150,7 +167,19 @@ def train_one_epoch(model, dataloader, optimizer, device, amp_enabled=False, gra
         optimizer.zero_grad(set_to_none=True)
         with autocast_context(device, amp_enabled):
             points_pred = model_points(model, images)
-            loss = chamfer_distance(points_pred, points_gt)
+            loss = weighted_chamfer_distance(
+                points_pred,
+                points_gt,
+                gt_weight=chamfer_gt_weight,
+            )
+            if repulsion_weight > 0:
+                repulsion = point_repulsion_loss(
+                    points_pred,
+                    k=repulsion_k,
+                    radius=repulsion_radius,
+                    sample_size=repulsion_sample_size,
+                )
+                loss = loss + repulsion_weight * repulsion
 
         if amp_enabled and grad_scaler is not None:
             grad_scaler.scale(loss).backward()
@@ -241,6 +270,26 @@ def parse_args():
     parser.add_argument("--lr-scheduler-patience", type=int, default=5)
     parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
+    parser.add_argument(
+        "--chamfer-gt-weight",
+        type=float,
+        default=1.25,
+        help="Weight for the ground-truth-to-prediction Chamfer term. Higher values improve surface coverage.",
+    )
+    parser.add_argument(
+        "--repulsion-weight",
+        type=float,
+        default=0.01,
+        help="Weight for predicted point repulsion regularization.",
+    )
+    parser.add_argument("--repulsion-k", type=int, default=8)
+    parser.add_argument("--repulsion-radius", type=float, default=0.03)
+    parser.add_argument(
+        "--repulsion-sample-size",
+        type=int,
+        default=512,
+        help="Number of predicted points sampled for repulsion loss. Use 0 to use all points.",
+    )
     parser.add_argument(
         "--augment",
         action=argparse.BooleanOptionalAction,
@@ -340,6 +389,16 @@ def parse_args():
         args.lr_scheduler_threshold = 0.0
     if args.lr_scheduler_min_lr < 0:
         args.lr_scheduler_min_lr = 0.0
+    if args.chamfer_gt_weight <= 0:
+        args.chamfer_gt_weight = 1.0
+    if args.repulsion_weight < 0:
+        args.repulsion_weight = 0.0
+    if args.repulsion_k < 0:
+        args.repulsion_k = 0
+    if args.repulsion_radius < 0:
+        args.repulsion_radius = 0.0
+    if args.repulsion_sample_size < 0:
+        args.repulsion_sample_size = 0
     return args
 
 
@@ -382,6 +441,11 @@ def build_checkpoint(
         "lr_scheduler_patience": getattr(args, "lr_scheduler_patience", 5),
         "lr_scheduler_threshold": getattr(args, "lr_scheduler_threshold", 1e-4),
         "lr_scheduler_min_lr": getattr(args, "lr_scheduler_min_lr", 1e-6),
+        "chamfer_gt_weight": getattr(args, "chamfer_gt_weight", 1.25),
+        "repulsion_weight": getattr(args, "repulsion_weight", 0.01),
+        "repulsion_k": getattr(args, "repulsion_k", 8),
+        "repulsion_radius": getattr(args, "repulsion_radius", 0.03),
+        "repulsion_sample_size": getattr(args, "repulsion_sample_size", 512),
         "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
         "early_stopping_patience": getattr(args, "early_stopping_patience", 0),
         "early_stopping_min_delta": getattr(args, "early_stopping_min_delta", 0.0),
@@ -827,6 +891,16 @@ def run_training(args):
         args.lr_scheduler_threshold = 1e-4
     if not hasattr(args, "lr_scheduler_min_lr"):
         args.lr_scheduler_min_lr = 1e-6
+    if not hasattr(args, "chamfer_gt_weight"):
+        args.chamfer_gt_weight = 1.25
+    if not hasattr(args, "repulsion_weight"):
+        args.repulsion_weight = 0.01
+    if not hasattr(args, "repulsion_k"):
+        args.repulsion_k = 8
+    if not hasattr(args, "repulsion_radius"):
+        args.repulsion_radius = 0.03
+    if not hasattr(args, "repulsion_sample_size"):
+        args.repulsion_sample_size = 512
     if not hasattr(args, "unfreeze_epoch"):
         args.unfreeze_epoch = None
     if not hasattr(args, "augment"):
@@ -859,6 +933,11 @@ def run_training(args):
     args.lr_scheduler_patience = max(0, int(args.lr_scheduler_patience or 0))
     args.lr_scheduler_threshold = max(0.0, float(args.lr_scheduler_threshold or 0.0))
     args.lr_scheduler_min_lr = max(0.0, float(args.lr_scheduler_min_lr or 0.0))
+    args.chamfer_gt_weight = max(1e-8, float(args.chamfer_gt_weight or 1.0))
+    args.repulsion_weight = max(0.0, float(args.repulsion_weight or 0.0))
+    args.repulsion_k = max(0, int(args.repulsion_k or 0))
+    args.repulsion_radius = max(0.0, float(args.repulsion_radius or 0.0))
+    args.repulsion_sample_size = max(0, int(args.repulsion_sample_size or 0))
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -1023,6 +1102,14 @@ def run_training(args):
         )
     else:
         logger.info("LR scheduler disabled.")
+    logger.info(
+        "Training loss: weighted_chamfer gt_weight=%s repulsion_weight=%s repulsion_k=%s repulsion_radius=%s repulsion_sample_size=%s",
+        args.chamfer_gt_weight,
+        args.repulsion_weight,
+        args.repulsion_k,
+        args.repulsion_radius,
+        args.repulsion_sample_size,
+    )
 
     metrics_path = metric_dir / "training_metrics.csv"
     best_checkpoint_path = checkpoint_dir / "best_model.pt"
@@ -1141,6 +1228,11 @@ def run_training(args):
                 device,
                 amp_enabled=amp_enabled,
                 grad_scaler=grad_scaler,
+                chamfer_gt_weight=args.chamfer_gt_weight,
+                repulsion_weight=args.repulsion_weight,
+                repulsion_k=args.repulsion_k,
+                repulsion_radius=args.repulsion_radius,
+                repulsion_sample_size=args.repulsion_sample_size,
             )
             val_metrics = evaluate(
                 model,
@@ -1291,6 +1383,11 @@ def run_training(args):
         "lr_scheduler_threshold": args.lr_scheduler_threshold,
         "lr_scheduler_min_lr": args.lr_scheduler_min_lr,
         "final_learning_rates": optimizer_lr_values(optimizer),
+        "chamfer_gt_weight": args.chamfer_gt_weight,
+        "repulsion_weight": args.repulsion_weight,
+        "repulsion_k": args.repulsion_k,
+        "repulsion_radius": args.repulsion_radius,
+        "repulsion_sample_size": args.repulsion_sample_size,
         "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
