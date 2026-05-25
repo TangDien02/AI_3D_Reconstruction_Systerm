@@ -188,7 +188,89 @@ Nhan xet ngan:
 - Val F-score cao nhat o epoch 2 voi `0.4169`.
 - Baseline da chay duoc end-to-end tu processed image sang predicted point cloud.
 
-## 7. Trang thai hien tai va viec nen lam tiep
+## 7. Benchmark hieu nang tuan 4
+
+Muc tieu benchmark tuan 4 la danh gia cac cai tien training tren GPU CUDA:
+
+- AMP mixed precision.
+- ReduceLROnPlateau learning-rate scheduler.
+- Phase freeze/unfreeze encoder: `--freeze-encoder --unfreeze-epoch 6`.
+- Train augmentation duoc bat bang `--augment`.
+
+Thiet lap chung cho cac benchmark:
+
+```text
+dataset_mode=processed
+processed_dir=data/processed_2048
+category=chair
+encoder=resnet50
+feature_dim=2048
+num_points=2048
+batch_size=16
+max_samples=1024
+val_max_samples=256
+device=cuda
+pretrained=True
+skip_evaluation=True
+skip_comparison=True
+```
+
+### 7.1 Benchmark 12 epoch
+
+Ket qua 12 epoch cho thay AMP tang toc ro ret, dac biet sau khi unfreeze encoder.
+`baseline.log` co 2 lan chay baseline A, nen dung range/average de nhin do on dinh.
+
+| Run | AMP | Scheduler | Total time | Frozen avg | Unfrozen avg | Best CD | Final F-score |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| A run 1 | off | off | 269.7s | 17.20s | 24.82s | 0.011249 | 0.5816 |
+| A run 2 | off | off | 264.1s | 17.17s | 24.90s | 0.011559 | 0.5662 |
+| B | on | off | 207.1s | 15.42s | 17.99s | 0.012140 | 0.5583 |
+| C | off | on | 267.6s | 16.81s | 25.17s | 0.011524 | 0.5713 |
+| D | on | on | 208.8s | 15.42s | 18.13s | 0.011787 | 0.5740 |
+
+Nhan xet:
+
+- AMP giam tong thoi gian training khoang 22% so voi baseline khong AMP.
+- Sau unfreeze encoder, AMP giam thoi gian moi epoch khoang 27%.
+- ReduceLROnPlateau trong benchmark 12 epoch chua giam learning rate vi validation metric van tiep tuc cai thien.
+- Best Chamfer Distance giua cac run co chenh lech nho va bi anh huong boi shuffle/augmentation, nen 12 epoch chua du de ket luan ve chat luong model.
+
+### 7.2 Benchmark scheduler 30 epoch
+
+Sau khi xac nhan AMP co loi ich ro, benchmark tiep theo giu AMP bat trong ca hai run va chi so sanh scheduler on/off.
+
+| Run | AMP | Scheduler | Epoch chay | Total time | Best epoch | Best CD | Final F-score | LR reduction |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| E | on | off | 30 | 548.5s | 28 | 0.010498 | 0.6035 | none |
+| F | on | on | 21 | 373.7s | 15 | 0.011007 | 0.5909 | epoch 17, 21 |
+
+Chi tiet scheduler run F:
+
+```text
+epoch 17: decoder lr 1e-4 -> 5e-5, encoder lr 1e-5 -> 5e-6
+epoch 21: decoder lr 5e-5 -> 2.5e-5, encoder lr 5e-6 -> 2.5e-6
+early stopping at epoch 21
+```
+
+Nhan xet:
+
+- Scheduler da hoat dong dung co che: phat hien plateau, giam learning rate va ket hop voi early stopping.
+- Tuy nhien, voi cau hinh da benchmark `factor=0.5`, `patience=3`, `threshold=0.0001`, scheduler cho ket qua kem hon AMP-only:
+  - Best CD cua E tot hon F: `0.010498` vs `0.011007`.
+  - Final F-score cua E tot hon F: `0.6035` vs `0.5909`.
+  - Run E tiep tuc cai thien den epoch 28, trong khi run F dung som o epoch 21.
+
+### 7.3 Quyet dinh ky thuat
+
+Ket luan tu benchmark tuan 4:
+
+- Giu AMP vi day la cai tien hieu nang ro rang tren CUDA, giup giam thoi gian training ma khong lam hong pipeline.
+- Giu code ReduceLROnPlateau trong pipeline de phuc vu experiment, nhung chua xem la cai tien mac dinh ve chat luong.
+- Scheduler can duoc tuning them truoc khi dung mac dinh, vi cau hinh hien tai giam LR va dung som nhung chua cai thien Chamfer Distance/F-score.
+- Sau benchmark, cau hinh scheduler duoc dieu chinh bot gat hon thanh `factor=0.7`, `patience=5` de giam LR cham hon va cho model them thoi gian cai thien.
+- Khi bao cao, nen mo ta scheduler la "da tich hop va da benchmark, can danh gia them", con AMP la "duoc chap nhan giu lai".
+
+## 8. Trang thai hien tai va viec nen lam tiep
 
 Da hoan thanh:
 
@@ -208,7 +290,7 @@ Can cai thien tiep:
 - Mo rong backend inference tu anh don sang video/scan 360 neu can demo end-to-end.
 - Chuyen giao dien sang dung endpoint `/reconstruct-image` sau khi backend ky thuat on dinh.
 
-## 8. Lenh ky thuat rut gon
+## 9. Lenh ky thuat rut gon
 
 Danh sach lenh cai dat, preprocessing, training, evaluation, inference va backend da duoc gom tai:
 

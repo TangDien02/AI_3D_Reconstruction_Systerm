@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--lr-scheduler", choices=["none", "plateau"], default="plateau")
-    parser.add_argument("--lr-scheduler-factor", type=float, default=0.5)
-    parser.add_argument("--lr-scheduler-patience", type=int, default=3)
+    parser.add_argument("--lr-scheduler-factor", type=float, default=0.7)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=5)
     parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument(
@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     if args.early_stopping_min_delta < 0:
         args.early_stopping_min_delta = 0.0
     if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
-        args.lr_scheduler_factor = 0.5
+        args.lr_scheduler_factor = 0.7
     if args.lr_scheduler_patience < 0:
         args.lr_scheduler_patience = 0
     if args.lr_scheduler_threshold < 0:

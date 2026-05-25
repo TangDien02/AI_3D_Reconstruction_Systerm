@@ -237,8 +237,8 @@ def parse_args():
         default="plateau",
         help="Learning-rate scheduler. plateau uses ReduceLROnPlateau on the selected validation metric.",
     )
-    parser.add_argument("--lr-scheduler-factor", type=float, default=0.5)
-    parser.add_argument("--lr-scheduler-patience", type=int, default=3)
+    parser.add_argument("--lr-scheduler-factor", type=float, default=0.7)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=5)
     parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument(
@@ -333,7 +333,7 @@ def parse_args():
     if args.early_stopping_min_delta < 0:
         args.early_stopping_min_delta = 0.0
     if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
-        args.lr_scheduler_factor = 0.5
+        args.lr_scheduler_factor = 0.7
     if args.lr_scheduler_patience < 0:
         args.lr_scheduler_patience = 0
     if args.lr_scheduler_threshold < 0:
@@ -378,8 +378,8 @@ def build_checkpoint(
         "weight_decay": getattr(args, "weight_decay", 0.0),
         "amp": getattr(args, "amp", True),
         "lr_scheduler": getattr(args, "lr_scheduler", "plateau"),
-        "lr_scheduler_factor": getattr(args, "lr_scheduler_factor", 0.5),
-        "lr_scheduler_patience": getattr(args, "lr_scheduler_patience", 3),
+        "lr_scheduler_factor": getattr(args, "lr_scheduler_factor", 0.7),
+        "lr_scheduler_patience": getattr(args, "lr_scheduler_patience", 5),
         "lr_scheduler_threshold": getattr(args, "lr_scheduler_threshold", 1e-4),
         "lr_scheduler_min_lr": getattr(args, "lr_scheduler_min_lr", 1e-6),
         "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
@@ -820,9 +820,9 @@ def run_training(args):
     if not hasattr(args, "lr_scheduler"):
         args.lr_scheduler = "plateau"
     if not hasattr(args, "lr_scheduler_factor"):
-        args.lr_scheduler_factor = 0.5
+        args.lr_scheduler_factor = 0.7
     if not hasattr(args, "lr_scheduler_patience"):
-        args.lr_scheduler_patience = 3
+        args.lr_scheduler_patience = 5
     if not hasattr(args, "lr_scheduler_threshold"):
         args.lr_scheduler_threshold = 1e-4
     if not hasattr(args, "lr_scheduler_min_lr"):
@@ -853,9 +853,9 @@ def run_training(args):
     args.early_stopping_min_epochs = max(0, int(args.early_stopping_min_epochs or 0))
     if args.lr_scheduler not in {"none", "plateau"}:
         args.lr_scheduler = "plateau"
-    args.lr_scheduler_factor = float(args.lr_scheduler_factor or 0.5)
+    args.lr_scheduler_factor = float(args.lr_scheduler_factor or 0.7)
     if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
-        args.lr_scheduler_factor = 0.5
+        args.lr_scheduler_factor = 0.7
     args.lr_scheduler_patience = max(0, int(args.lr_scheduler_patience or 0))
     args.lr_scheduler_threshold = max(0.0, float(args.lr_scheduler_threshold or 0.0))
     args.lr_scheduler_min_lr = max(0.0, float(args.lr_scheduler_min_lr or 0.0))

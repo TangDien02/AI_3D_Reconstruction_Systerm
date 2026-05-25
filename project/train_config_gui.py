@@ -101,8 +101,8 @@ class TrainingConfigGui(tk.Tk):
         self.weight_decay_var = tk.StringVar(value="0.0001")
         self.amp_var = tk.BooleanVar(value=True)
         self.lr_scheduler_var = tk.StringVar(value="plateau")
-        self.lr_scheduler_factor_var = tk.StringVar(value="0.5")
-        self.lr_scheduler_patience_var = tk.StringVar(value="3")
+        self.lr_scheduler_factor_var = tk.StringVar(value="0.7")
+        self.lr_scheduler_patience_var = tk.StringVar(value="5")
         self.lr_scheduler_threshold_var = tk.StringVar(value="0.0001")
         self.lr_scheduler_min_lr_var = tk.StringVar(value="0.000001")
         self.unfreeze_epoch_var = tk.StringVar(value="10")
@@ -597,8 +597,8 @@ class TrainingConfigGui(tk.Tk):
             "Performance: "
             f"AMP={'enabled' if self.amp_var.get() else 'disabled'}, "
             f"scheduler={self.lr_scheduler_var.get().strip()} "
-            f"(factor={numeric.get('lr_scheduler_factor', 0.5)}, "
-            f"patience={numeric.get('lr_scheduler_patience', 3)})."
+            f"(factor={numeric.get('lr_scheduler_factor', 0.7)}, "
+            f"patience={numeric.get('lr_scheduler_patience', 5)})."
         )
 
         self.write_status(errors, warnings, infos)
@@ -680,9 +680,9 @@ class TrainingConfigGui(tk.Tk):
             "--lr-scheduler",
             self.lr_scheduler_var.get().strip() or "plateau",
             "--lr-scheduler-factor",
-            self.lr_scheduler_factor_var.get().strip() or "0.5",
+            self.lr_scheduler_factor_var.get().strip() or "0.7",
             "--lr-scheduler-patience",
-            self.lr_scheduler_patience_var.get().strip() or "3",
+            self.lr_scheduler_patience_var.get().strip() or "5",
             "--lr-scheduler-threshold",
             self.lr_scheduler_threshold_var.get().strip() or "0.0001",
             "--lr-scheduler-min-lr",
