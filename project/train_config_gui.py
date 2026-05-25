@@ -114,6 +114,9 @@ class TrainingConfigGui(tk.Tk):
         self.image_size_var = tk.StringVar(value="224")
         self.encoder_name_var = tk.StringVar(value="resnet18")
         self.feature_dim_var = tk.StringVar(value="512")
+        self.decoder_type_var = tk.StringVar(value="mlp")
+        self.coarse_points_var = tk.StringVar(value="512")
+        self.refine_offset_scale_var = tk.StringVar(value="0.08")
         self.pretrained_var = tk.BooleanVar(value=True)
         self.freeze_encoder_var = tk.BooleanVar(value=True)
         self.best_metric_var = tk.StringVar(value="val_chamfer_distance")
@@ -283,10 +286,23 @@ class TrainingConfigGui(tk.Tk):
         encoder_combo.grid(row=0, column=1, sticky=tk.W, padx=8, pady=5)
         encoder_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_encoder_change())
 
+        ttk.Label(arch_frame, text="Decoder").grid(row=0, column=2, sticky=tk.W, padx=8, pady=5)
+        decoder_combo = ttk.Combobox(
+            arch_frame,
+            textvariable=self.decoder_type_var,
+            values=["mlp", "refine_mlp"],
+            state="readonly",
+            width=14,
+        )
+        decoder_combo.grid(row=0, column=3, sticky=tk.W, padx=8, pady=5)
+        decoder_combo.bind("<<ComboboxSelected>>", lambda _event: self.validate_config(show_dialog=False))
+
         arch_fields = [
             ("Num points", self.num_points_var),
             ("Image size", self.image_size_var),
             ("Feature dim", self.feature_dim_var),
+            ("Coarse points", self.coarse_points_var),
+            ("Offset scale", self.refine_offset_scale_var),
         ]
         for row, (label, variable) in enumerate(arch_fields):
             grid_row = (row + 2) // 2
@@ -299,7 +315,7 @@ class TrainingConfigGui(tk.Tk):
                 pady=5,
             )
         ttk.Checkbutton(arch_frame, text="Pretrained ImageNet", variable=self.pretrained_var).grid(
-            row=3,
+            row=4,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -307,7 +323,7 @@ class TrainingConfigGui(tk.Tk):
             pady=5,
         )
         ttk.Checkbutton(arch_frame, text="Freeze encoder", variable=self.freeze_encoder_var).grid(
-            row=3,
+            row=4,
             column=2,
             columnspan=2,
             sticky=tk.W,
@@ -418,6 +434,7 @@ class TrainingConfigGui(tk.Tk):
             "num_points": self.num_points_var,
             "image_size": self.image_size_var,
             "feature_dim": self.feature_dim_var,
+            "coarse_points": self.coarse_points_var,
         }
         for key, variable in int_fields.items():
             text = variable.get().strip()
@@ -454,6 +471,7 @@ class TrainingConfigGui(tk.Tk):
             "lr_scheduler_threshold": self.lr_scheduler_threshold_var,
             "lr_scheduler_min_lr": self.lr_scheduler_min_lr_var,
             "early_stopping_min_delta": self.early_stopping_min_delta_var,
+            "refine_offset_scale": self.refine_offset_scale_var,
         }.items():
             text = variable.get().strip()
             if key == "early_stopping_min_delta" and text == "":
@@ -473,6 +491,12 @@ class TrainingConfigGui(tk.Tk):
             elif value <= 0:
                 errors.append(f"{key} phai lon hon 0.")
             config[key] = value
+        if self.decoder_type_var.get() == "refine_mlp":
+            num_points = config.get("num_points")
+            coarse_points = config.get("coarse_points")
+            if isinstance(num_points, int) and isinstance(coarse_points, int):
+                if num_points % coarse_points != 0:
+                    errors.append("num_points phai chia het cho coarse_points khi dung refine_mlp.")
         return config, errors
 
     def resolve_checkpoint_path(self) -> tuple[Path | None, str]:
@@ -564,6 +588,11 @@ class TrainingConfigGui(tk.Tk):
                     errors.append(
                         f"Sai encoder_name: checkpoint={checkpoint.get('encoder_name')} current={self.encoder_name_var.get()}."
                     )
+                checkpoint_decoder_type = checkpoint.get("decoder_type", "mlp")
+                if checkpoint_decoder_type != self.decoder_type_var.get():
+                    errors.append(
+                        f"Sai decoder_type: checkpoint={checkpoint_decoder_type} current={self.decoder_type_var.get()}."
+                    )
                 for key, variable in {
                     "pretrained": self.pretrained_var,
                     "freeze_encoder": self.freeze_encoder_var,
@@ -576,6 +605,13 @@ class TrainingConfigGui(tk.Tk):
                     if checkpoint_value is not None and current_value is not None:
                         if int(checkpoint_value) != int(current_value):
                             errors.append(f"Sai {key}: checkpoint={checkpoint_value} current={current_value}.")
+                if self.decoder_type_var.get() == "refine_mlp":
+                    for key in ("coarse_points",):
+                        current_value = numeric.get(key)
+                        checkpoint_value = checkpoint.get(key)
+                        if checkpoint_value is not None and current_value is not None:
+                            if int(checkpoint_value) != int(current_value):
+                                errors.append(f"Sai {key}: checkpoint={checkpoint_value} current={current_value}.")
 
         infos.append("Command:")
         infos.append(" ".join(self.build_command()))
@@ -667,6 +703,12 @@ class TrainingConfigGui(tk.Tk):
             self.encoder_name_var.get().strip(),
             "--feature-dim",
             self.feature_dim_var.get().strip(),
+            "--decoder-type",
+            self.decoder_type_var.get().strip(),
+            "--coarse-points",
+            self.coarse_points_var.get().strip(),
+            "--refine-offset-scale",
+            self.refine_offset_scale_var.get().strip(),
             "--device",
             self.selected_device_name(),
             "--best-metric",

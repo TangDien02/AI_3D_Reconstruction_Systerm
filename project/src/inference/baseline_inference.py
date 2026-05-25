@@ -72,6 +72,9 @@ def load_baseline_model(checkpoint_path: str | Path, device: torch.device) -> tu
         feature_dim=int(checkpoint.get("feature_dim", 512)),
         num_points=int(checkpoint.get("num_points", 2048)),
         freeze_encoder=bool(checkpoint.get("freeze_encoder", True)),
+        decoder_type=str(checkpoint.get("decoder_type", "mlp")),
+        coarse_points=int(checkpoint.get("coarse_points", 512)),
+        refine_offset_scale=float(checkpoint.get("refine_offset_scale", 0.08)),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -133,6 +136,9 @@ def main() -> None:
         "image_path": str(image_path),
         "checkpoint_path": str(checkpoint_path),
         "categories": checkpoint.get("categories"),
+        "decoder_type": checkpoint.get("decoder_type", "mlp"),
+        "coarse_points": checkpoint.get("coarse_points"),
+        "refine_offset_scale": checkpoint.get("refine_offset_scale"),
         "num_points": int(points.shape[0]),
         "npy_path": str(npy_path),
         "ply_path": str(ply_path),

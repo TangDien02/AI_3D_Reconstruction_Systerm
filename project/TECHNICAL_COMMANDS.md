@@ -146,6 +146,13 @@ $env:KMP_DUPLICATE_LIB_OK="TRUE"
 python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 30 --batch-size 16 --max-samples 1024 --val-max-samples 256 --encoder-name resnet50 --feature-dim 2048 --num-points 2048 --output-dir results/bench_repulsion_coverage --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.02 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512
 ```
 
+Thu nghiem decoder coarse-to-fine refinement de giam point cloud bua:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 40 --batch-size 16 --encoder-name resnet50 --feature-dim 2048 --decoder-type refine_mlp --coarse-points 512 --refine-offset-scale 0.08 --num-points 2048 --output-dir results/compare_decoder_C_refine_mlp_chair --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.005 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512 --eval-max-samples 128 --comparison-index 0
+```
+
 Artifact duoc luu vao:
 
 ```text

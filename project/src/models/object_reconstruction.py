@@ -135,6 +135,96 @@ class MLPPointCloudDecoder(nn.Module):
         return points.view(features.shape[0], self.num_points, 3)
 
 
+class RefinePointCloudDecoder(nn.Module):
+    """Coarse-to-fine decoder: predict anchors, then refine local child points around each anchor."""
+
+    def __init__(
+        self,
+        feature_dim: int,
+        num_points: int = 2048,
+        coarse_points: int = 512,
+        hidden_dim: int = 1024,
+        offset_scale: float = 0.08,
+    ):
+        super().__init__()
+        if coarse_points <= 0:
+            raise ValueError("coarse_points must be greater than 0.")
+        if num_points % coarse_points != 0:
+            raise ValueError(
+                f"num_points must be divisible by coarse_points for refine_mlp: "
+                f"num_points={num_points}, coarse_points={coarse_points}."
+            )
+
+        self.num_points = num_points
+        self.coarse_points = coarse_points
+        self.upsample_ratio = num_points // coarse_points
+        self.offset_scale = float(offset_scale)
+        refine_feature_dim = hidden_dim // 2
+
+        self.coarse_net = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            nn.Linear(feature_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, coarse_points * 3),
+            nn.Tanh(),
+        )
+        self.feature_projector = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            nn.Linear(feature_dim, refine_feature_dim),
+            nn.GELU(),
+            nn.Linear(refine_feature_dim, refine_feature_dim),
+            nn.GELU(),
+        )
+        self.refine_net = nn.Sequential(
+            nn.Linear(refine_feature_dim + 6, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 4, 3),
+            nn.Tanh(),
+        )
+        self.register_buffer("local_seeds", self._build_local_seeds(self.upsample_ratio), persistent=False)
+
+    @staticmethod
+    def _build_local_seeds(upsample_ratio: int) -> torch.Tensor:
+        if upsample_ratio == 1:
+            return torch.zeros(1, 3, dtype=torch.float32)
+
+        seeds = []
+        grid_size = 1
+        while grid_size * grid_size < upsample_ratio:
+            grid_size += 1
+        values = torch.linspace(-1.0, 1.0, steps=grid_size)
+        for y in values:
+            for x in values:
+                seeds.append([float(x), float(y), 0.0])
+                if len(seeds) == upsample_ratio:
+                    return torch.tensor(seeds, dtype=torch.float32)
+        return torch.tensor(seeds[:upsample_ratio], dtype=torch.float32)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        batch_size = features.shape[0]
+        coarse = self.coarse_net(features).view(batch_size, self.coarse_points, 3)
+        projected = self.feature_projector(features)
+
+        coarse_expanded = coarse.unsqueeze(2).expand(-1, -1, self.upsample_ratio, -1)
+        seeds = self.local_seeds.view(1, 1, self.upsample_ratio, 3).expand(batch_size, self.coarse_points, -1, -1)
+        global_expanded = projected.view(batch_size, 1, 1, -1).expand(
+            -1,
+            self.coarse_points,
+            self.upsample_ratio,
+            -1,
+        )
+
+        refine_input = torch.cat([global_expanded, coarse_expanded, seeds], dim=-1)
+        offsets = self.refine_net(refine_input.reshape(batch_size * self.num_points, -1))
+        offsets = offsets.view(batch_size, self.coarse_points, self.upsample_ratio, 3)
+        points = coarse_expanded + (seeds + offsets) * self.offset_scale
+        return torch.tanh(points.reshape(batch_size, self.num_points, 3))
+
+
 class DomainDiscriminator(nn.Module):
     def __init__(self, feature_dim: int, hidden_dim: int = 256, num_domains: int = 2):
         super().__init__()
@@ -170,11 +260,25 @@ class ObjectReconstructionNet(nn.Module):
         adapter_bottleneck_dim: int = 64,
         use_domain_discriminator: bool = False,
         grl_lambda: float = 1.0,
+        decoder_type: str = "mlp",
+        coarse_points: int = 512,
+        refine_offset_scale: float = 0.08,
     ):
         super().__init__()
         self.encoder = encoder
         self.adapter = AdapterBlock(feature_dim, adapter_bottleneck_dim) if use_adapter else nn.Identity()
-        self.decoder = MLPPointCloudDecoder(feature_dim=feature_dim, num_points=num_points)
+        self.decoder_type = decoder_type
+        if decoder_type == "mlp":
+            self.decoder = MLPPointCloudDecoder(feature_dim=feature_dim, num_points=num_points)
+        elif decoder_type == "refine_mlp":
+            self.decoder = RefinePointCloudDecoder(
+                feature_dim=feature_dim,
+                num_points=num_points,
+                coarse_points=coarse_points,
+                offset_scale=refine_offset_scale,
+            )
+        else:
+            raise ValueError(f"Unsupported decoder_type: {decoder_type}")
         self.grl = GradientReversalLayer(lambda_value=grl_lambda)
         self.domain_discriminator = (
             DomainDiscriminator(feature_dim=feature_dim) if use_domain_discriminator else None
@@ -209,6 +313,9 @@ def build_object_reconstruction_model(
     use_adapter: bool = False,
     use_domain_discriminator: bool = False,
     normalize_input: bool | None = None,
+    decoder_type: str = "mlp",
+    coarse_points: int = 512,
+    refine_offset_scale: float = 0.08,
 ) -> ObjectReconstructionNet:
     if encoder_name == "conv":
         encoder = ConvFeatureEncoder(feature_dim=feature_dim)
@@ -228,6 +335,9 @@ def build_object_reconstruction_model(
         num_points=num_points,
         use_adapter=use_adapter,
         use_domain_discriminator=use_domain_discriminator,
+        decoder_type=decoder_type,
+        coarse_points=coarse_points,
+        refine_offset_scale=refine_offset_scale,
     )
     if freeze_encoder:
         model.freeze_encoder()

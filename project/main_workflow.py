@@ -96,6 +96,9 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(resume=True)
     parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
     parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument("--decoder-type", choices=["mlp", "refine_mlp"], default="mlp")
+    parser.add_argument("--coarse-points", type=int, default=512)
+    parser.add_argument("--refine-offset-scale", type=float, default=0.08)
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--overwrite", action="store_true")
@@ -131,6 +134,15 @@ def parse_args() -> argparse.Namespace:
         args.repulsion_radius = 0.0
     if args.repulsion_sample_size < 0:
         args.repulsion_sample_size = 0
+    if args.coarse_points <= 0:
+        args.coarse_points = 512
+    if args.refine_offset_scale <= 0:
+        args.refine_offset_scale = 0.08
+    if args.decoder_type == "refine_mlp" and args.num_points % args.coarse_points != 0:
+        parser.error(
+            "--num-points must be divisible by --coarse-points for refine_mlp "
+            f"(got num_points={args.num_points}, coarse_points={args.coarse_points})."
+        )
     return args
 
 
@@ -199,6 +211,9 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         image_size=args.image_size,
         encoder_name=args.encoder_name,
         feature_dim=args.feature_dim,
+        decoder_type=args.decoder_type,
+        coarse_points=args.coarse_points,
+        refine_offset_scale=args.refine_offset_scale,
         pretrained=args.pretrained,
         freeze_encoder=args.freeze_encoder,
         batch_size=args.batch_size,

@@ -246,6 +246,24 @@ def parse_args():
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
     parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument(
+        "--decoder-type",
+        choices=["mlp", "refine_mlp"],
+        default="mlp",
+        help="Point cloud decoder. refine_mlp uses coarse-to-fine anchor refinement.",
+    )
+    parser.add_argument(
+        "--coarse-points",
+        type=int,
+        default=512,
+        help="Number of coarse anchors for --decoder-type refine_mlp.",
+    )
+    parser.add_argument(
+        "--refine-offset-scale",
+        type=float,
+        default=0.08,
+        help="Maximum local child-point offset scale for --decoder-type refine_mlp.",
+    )
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -399,6 +417,15 @@ def parse_args():
         args.repulsion_radius = 0.0
     if args.repulsion_sample_size < 0:
         args.repulsion_sample_size = 0
+    if args.coarse_points <= 0:
+        args.coarse_points = 512
+    if args.refine_offset_scale <= 0:
+        args.refine_offset_scale = 0.08
+    if args.decoder_type == "refine_mlp" and args.num_points % args.coarse_points != 0:
+        parser.error(
+            "--num-points must be divisible by --coarse-points for refine_mlp "
+            f"(got num_points={args.num_points}, coarse_points={args.coarse_points})."
+        )
     return args
 
 
@@ -424,6 +451,9 @@ def build_checkpoint(
         "image_size": args.image_size,
         "encoder_name": args.encoder_name,
         "feature_dim": args.feature_dim,
+        "decoder_type": getattr(args, "decoder_type", "mlp"),
+        "coarse_points": getattr(args, "coarse_points", 512),
+        "refine_offset_scale": getattr(args, "refine_offset_scale", 0.08),
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
         "encoder_unfrozen": getattr(args, "encoder_unfrozen", None),
@@ -518,6 +548,25 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
     for key in ["num_points", "image_size", "feature_dim"]:
         if key in checkpoint and int(checkpoint[key]) != int(getattr(args, key)):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
+
+    checkpoint_decoder_type = checkpoint.get("decoder_type", "mlp")
+    current_decoder_type = getattr(args, "decoder_type", "mlp")
+    if checkpoint_decoder_type != current_decoder_type:
+        mismatches.append(f"decoder_type: checkpoint={checkpoint_decoder_type} current={current_decoder_type}")
+    if current_decoder_type == "refine_mlp":
+        if "coarse_points" in checkpoint and int(checkpoint["coarse_points"]) != int(
+            getattr(args, "coarse_points")
+        ):
+            mismatches.append(
+                f"coarse_points: checkpoint={checkpoint['coarse_points']} current={getattr(args, 'coarse_points')}"
+            )
+        if "refine_offset_scale" in checkpoint and float(checkpoint["refine_offset_scale"]) != float(
+            getattr(args, "refine_offset_scale")
+        ):
+            mismatches.append(
+                "refine_offset_scale: "
+                f"checkpoint={checkpoint['refine_offset_scale']} current={getattr(args, 'refine_offset_scale')}"
+            )
 
     for key in ["encoder_name", "pretrained", "freeze_encoder"]:
         if key in checkpoint and checkpoint[key] != getattr(args, key):
@@ -873,6 +922,12 @@ def run_training(args):
         args.pretrained = True
     if not hasattr(args, "freeze_encoder"):
         args.freeze_encoder = True
+    if not hasattr(args, "decoder_type"):
+        args.decoder_type = "mlp"
+    if not hasattr(args, "coarse_points"):
+        args.coarse_points = 512
+    if not hasattr(args, "refine_offset_scale"):
+        args.refine_offset_scale = 0.08
     if not hasattr(args, "decoder_lr"):
         args.decoder_lr = None
     if not hasattr(args, "encoder_lr"):
@@ -938,6 +993,15 @@ def run_training(args):
     args.repulsion_k = max(0, int(args.repulsion_k or 0))
     args.repulsion_radius = max(0.0, float(args.repulsion_radius or 0.0))
     args.repulsion_sample_size = max(0, int(args.repulsion_sample_size or 0))
+    if args.decoder_type not in {"mlp", "refine_mlp"}:
+        args.decoder_type = "mlp"
+    args.coarse_points = max(1, int(args.coarse_points or 512))
+    args.refine_offset_scale = max(1e-8, float(args.refine_offset_scale or 0.08))
+    if args.decoder_type == "refine_mlp" and int(args.num_points) % args.coarse_points != 0:
+        raise ValueError(
+            "num_points must be divisible by coarse_points for refine_mlp: "
+            f"num_points={args.num_points}, coarse_points={args.coarse_points}"
+        )
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -1068,10 +1132,16 @@ def run_training(args):
         feature_dim=args.feature_dim,
         num_points=args.num_points,
         freeze_encoder=args.freeze_encoder,
+        decoder_type=args.decoder_type,
+        coarse_points=args.coarse_points,
+        refine_offset_scale=args.refine_offset_scale,
     ).to(device)
     logger.info(
-        "Model ready: resnet_pointcloud encoder=%s pretrained=%s freeze_encoder=%s feature_dim=%s num_points=%s trainable_params=%s",
+        "Model ready: resnet_pointcloud encoder=%s decoder=%s coarse_points=%s refine_offset_scale=%s pretrained=%s freeze_encoder=%s feature_dim=%s num_points=%s trainable_params=%s",
         args.encoder_name,
+        args.decoder_type,
+        args.coarse_points,
+        args.refine_offset_scale,
         args.pretrained,
         args.freeze_encoder,
         args.feature_dim,
@@ -1368,6 +1438,9 @@ def run_training(args):
         "image_size": args.image_size,
         "model_type": "resnet_pointcloud",
         "encoder_name": args.encoder_name,
+        "decoder_type": args.decoder_type,
+        "coarse_points": args.coarse_points,
+        "refine_offset_scale": args.refine_offset_scale,
         "feature_dim": args.feature_dim,
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
