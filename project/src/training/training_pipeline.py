@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -115,6 +116,19 @@ def model_points(model, images: torch.Tensor) -> torch.Tensor:
     return output.points if hasattr(output, "points") else output
 
 
+def autocast_context(device: torch.device, enabled: bool):
+    if not enabled:
+        return nullcontext()
+    return torch.amp.autocast(device_type=device.type)
+
+
+def build_grad_scaler(enabled: bool):
+    try:
+        return torch.amp.GradScaler("cuda", enabled=enabled)
+    except TypeError:
+        return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
 class AddGaussianNoise:
     def __init__(self, std: float = 0.0):
         self.std = max(0.0, float(std))
@@ -125,7 +139,7 @@ class AddGaussianNoise:
         return torch.clamp(tensor + torch.randn_like(tensor) * self.std, 0.0, 1.0)
 
 
-def train_one_epoch(model, dataloader, optimizer, device):
+def train_one_epoch(model, dataloader, optimizer, device, amp_enabled=False, grad_scaler=None):
     model.train()
     total_loss = 0.0
 
@@ -133,12 +147,18 @@ def train_one_epoch(model, dataloader, optimizer, device):
         images = batch["image"].to(device)
         points_gt = batch["points_gt"].to(device)
 
-        points_pred = model_points(model, images)
-        loss = chamfer_distance(points_pred, points_gt)
+        optimizer.zero_grad(set_to_none=True)
+        with autocast_context(device, amp_enabled):
+            points_pred = model_points(model, images)
+            loss = chamfer_distance(points_pred, points_gt)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if amp_enabled and grad_scaler is not None:
+            grad_scaler.scale(loss).backward()
+            grad_scaler.step(optimizer)
+            grad_scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         total_loss += loss.item()
 
@@ -146,7 +166,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device, threshold):
+def evaluate(model, dataloader, device, threshold, amp_enabled=False):
     model.eval()
     total_cd = 0.0
     total_f = 0.0
@@ -155,9 +175,10 @@ def evaluate(model, dataloader, device, threshold):
         images = batch["image"].to(device)
         points_gt = batch["points_gt"].to(device)
 
-        points_pred = model_points(model, images)
-        total_cd += chamfer_distance(points_pred, points_gt).item()
-        total_f += f_score(points_pred, points_gt, threshold=threshold)[0]
+        with autocast_context(device, amp_enabled):
+            points_pred = model_points(model, images)
+            total_cd += chamfer_distance(points_pred, points_gt).item()
+            total_f += f_score(points_pred, points_gt, threshold=threshold)[0]
 
     num_batches = max(len(dataloader), 1)
     return {
@@ -204,6 +225,22 @@ def parse_args():
     parser.add_argument("--decoder-lr", type=float, default=None)
     parser.add_argument("--encoder-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--amp",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use automatic mixed precision when training on CUDA. CPU runs keep FP32.",
+    )
+    parser.add_argument(
+        "--lr-scheduler",
+        choices=["none", "plateau"],
+        default="plateau",
+        help="Learning-rate scheduler. plateau uses ReduceLROnPlateau on the selected validation metric.",
+    )
+    parser.add_argument("--lr-scheduler-factor", type=float, default=0.5)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=3)
+    parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
+    parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument(
         "--augment",
         action=argparse.BooleanOptionalAction,
@@ -295,6 +332,14 @@ def parse_args():
             setattr(args, field, 0)
     if args.early_stopping_min_delta < 0:
         args.early_stopping_min_delta = 0.0
+    if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
+        args.lr_scheduler_factor = 0.5
+    if args.lr_scheduler_patience < 0:
+        args.lr_scheduler_patience = 0
+    if args.lr_scheduler_threshold < 0:
+        args.lr_scheduler_threshold = 0.0
+    if args.lr_scheduler_min_lr < 0:
+        args.lr_scheduler_min_lr = 0.0
     return args
 
 
@@ -308,6 +353,8 @@ def build_checkpoint(
     best_score=None,
     best_epoch=None,
     optimizer=None,
+    scheduler=None,
+    grad_scaler=None,
     resumed_from_checkpoint=None,
 ):
     checkpoint = {
@@ -329,6 +376,12 @@ def build_checkpoint(
         "decoder_lr": getattr(args, "decoder_lr", None),
         "encoder_lr": getattr(args, "encoder_lr", None),
         "weight_decay": getattr(args, "weight_decay", 0.0),
+        "amp": getattr(args, "amp", True),
+        "lr_scheduler": getattr(args, "lr_scheduler", "plateau"),
+        "lr_scheduler_factor": getattr(args, "lr_scheduler_factor", 0.5),
+        "lr_scheduler_patience": getattr(args, "lr_scheduler_patience", 3),
+        "lr_scheduler_threshold": getattr(args, "lr_scheduler_threshold", 1e-4),
+        "lr_scheduler_min_lr": getattr(args, "lr_scheduler_min_lr", 1e-6),
         "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
         "early_stopping_patience": getattr(args, "early_stopping_patience", 0),
         "early_stopping_min_delta": getattr(args, "early_stopping_min_delta", 0.0),
@@ -342,6 +395,10 @@ def build_checkpoint(
     }
     if optimizer is not None:
         checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["lr_scheduler_state_dict"] = scheduler.state_dict()
+    if grad_scaler is not None:
+        checkpoint["grad_scaler_state_dict"] = grad_scaler.state_dict()
     if train_loss is not None:
         checkpoint["train_loss"] = train_loss
     if val_metrics is not None:
@@ -488,6 +545,48 @@ def build_optimizer(model, args) -> torch.optim.Optimizer:
         raise RuntimeError("No trainable parameters found.")
 
     return torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+
+
+def build_lr_scheduler(optimizer: torch.optim.Optimizer, args):
+    if getattr(args, "lr_scheduler", "plateau") == "none":
+        return None
+
+    mode = "min" if args.best_metric == "val_chamfer_distance" else "max"
+    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=mode,
+        factor=args.lr_scheduler_factor,
+        patience=args.lr_scheduler_patience,
+        threshold=args.lr_scheduler_threshold,
+        threshold_mode="abs",
+        min_lr=args.lr_scheduler_min_lr,
+    )
+
+
+def optimizer_lr_summary(optimizer: torch.optim.Optimizer) -> str:
+    parts = []
+    for index, group in enumerate(optimizer.param_groups):
+        name = group.get("name") or f"group_{index}"
+        parts.append(f"{name}={group['lr']:.2e}")
+    return ",".join(parts)
+
+
+def optimizer_lr_values(optimizer: torch.optim.Optimizer) -> dict[str, float]:
+    values = {}
+    for index, group in enumerate(optimizer.param_groups):
+        name = group.get("name") or f"group_{index}"
+        values[name] = float(group["lr"])
+    return values
+
+
+def step_lr_scheduler(scheduler, optimizer: torch.optim.Optimizer, metric: float) -> bool:
+    if scheduler is None:
+        return False
+
+    before = [float(group["lr"]) for group in optimizer.param_groups]
+    scheduler.step(metric)
+    after = [float(group["lr"]) for group in optimizer.param_groups]
+    return any(new_lr < old_lr for old_lr, new_lr in zip(before, after))
 
 
 def read_last_metrics_epoch(metrics_path: Path) -> int:
@@ -716,6 +815,18 @@ def run_training(args):
         args.encoder_lr = 1e-5
     if not hasattr(args, "weight_decay"):
         args.weight_decay = 1e-4
+    if not hasattr(args, "amp"):
+        args.amp = True
+    if not hasattr(args, "lr_scheduler"):
+        args.lr_scheduler = "plateau"
+    if not hasattr(args, "lr_scheduler_factor"):
+        args.lr_scheduler_factor = 0.5
+    if not hasattr(args, "lr_scheduler_patience"):
+        args.lr_scheduler_patience = 3
+    if not hasattr(args, "lr_scheduler_threshold"):
+        args.lr_scheduler_threshold = 1e-4
+    if not hasattr(args, "lr_scheduler_min_lr"):
+        args.lr_scheduler_min_lr = 1e-6
     if not hasattr(args, "unfreeze_epoch"):
         args.unfreeze_epoch = None
     if not hasattr(args, "augment"):
@@ -740,6 +851,14 @@ def run_training(args):
     args.early_stopping_patience = max(0, int(args.early_stopping_patience or 0))
     args.early_stopping_min_delta = max(0.0, float(args.early_stopping_min_delta or 0.0))
     args.early_stopping_min_epochs = max(0, int(args.early_stopping_min_epochs or 0))
+    if args.lr_scheduler not in {"none", "plateau"}:
+        args.lr_scheduler = "plateau"
+    args.lr_scheduler_factor = float(args.lr_scheduler_factor or 0.5)
+    if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
+        args.lr_scheduler_factor = 0.5
+    args.lr_scheduler_patience = max(0, int(args.lr_scheduler_patience or 0))
+    args.lr_scheduler_threshold = max(0.0, float(args.lr_scheduler_threshold or 0.0))
+    args.lr_scheduler_min_lr = max(0.0, float(args.lr_scheduler_min_lr or 0.0))
 
     raw_dir = (PROJECT_DIR / args.raw_dir).resolve()
     processed_dir = (PROJECT_DIR / args.processed_dir).resolve()
@@ -883,6 +1002,27 @@ def run_training(args):
     encoder_unfrozen = not args.freeze_encoder
     args.encoder_unfrozen = encoder_unfrozen
     optimizer = build_optimizer(model, args)
+    scheduler = build_lr_scheduler(optimizer, args)
+    amp_enabled = bool(args.amp and device.type == "cuda")
+    grad_scaler = build_grad_scaler(amp_enabled)
+    scheduler_resumed = False
+    grad_scaler_resumed = False
+
+    if args.amp and not amp_enabled:
+        logger.info("AMP requested but inactive because device=%s. Training uses FP32.", device)
+    elif amp_enabled:
+        logger.info("AMP mixed precision enabled for CUDA training.")
+    if scheduler is not None:
+        logger.info(
+            "ReduceLROnPlateau enabled: metric=%s factor=%s patience=%s threshold=%s min_lr=%s",
+            args.best_metric,
+            args.lr_scheduler_factor,
+            args.lr_scheduler_patience,
+            args.lr_scheduler_threshold,
+            args.lr_scheduler_min_lr,
+        )
+    else:
+        logger.info("LR scheduler disabled.")
 
     metrics_path = metric_dir / "training_metrics.csv"
     best_checkpoint_path = checkpoint_dir / "best_model.pt"
@@ -902,6 +1042,7 @@ def run_training(args):
             encoder_unfrozen = True
             args.encoder_unfrozen = True
             optimizer = build_optimizer(model, args)
+            scheduler = build_lr_scheduler(optimizer, args)
             logger.info("Resume checkpoint was saved after encoder unfreeze; rebuilt optimizer param groups.")
 
         if "optimizer_state_dict" in checkpoint:
@@ -911,6 +1052,24 @@ def run_training(args):
                 optimizer_resumed = True
             except ValueError as exc:
                 message = f"Could not resume optimizer_state_dict ({exc}); continuing with a fresh AdamW optimizer."
+                print(message)
+                logger.warning(message)
+
+        if scheduler is not None and "lr_scheduler_state_dict" in checkpoint:
+            try:
+                scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+                scheduler_resumed = True
+            except ValueError as exc:
+                message = f"Could not resume lr_scheduler_state_dict ({exc}); continuing with a fresh scheduler."
+                print(message)
+                logger.warning(message)
+
+        if amp_enabled and "grad_scaler_state_dict" in checkpoint:
+            try:
+                grad_scaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
+                grad_scaler_resumed = True
+            except ValueError as exc:
+                message = f"Could not resume grad_scaler_state_dict ({exc}); continuing with a fresh GradScaler."
                 print(message)
                 logger.warning(message)
 
@@ -967,6 +1126,7 @@ def run_training(args):
                 encoder_unfrozen = True
                 args.encoder_unfrozen = True
                 optimizer = build_optimizer(model, args)
+                scheduler = build_lr_scheduler(optimizer, args)
                 message = (
                     f"Unfroze encoder at epoch={epoch}; "
                     f"encoder_lr={args.encoder_lr} decoder_lr={args.decoder_lr or args.lr}"
@@ -974,8 +1134,21 @@ def run_training(args):
                 print(message)
                 logger.info(message)
 
-            train_loss = train_one_epoch(model, train_loader, optimizer, device)
-            val_metrics = evaluate(model, val_loader, device, threshold=args.f_threshold)
+            train_loss = train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                device,
+                amp_enabled=amp_enabled,
+                grad_scaler=grad_scaler,
+            )
+            val_metrics = evaluate(
+                model,
+                val_loader,
+                device,
+                threshold=args.f_threshold,
+                amp_enabled=amp_enabled,
+            )
 
             row = {
                 "epoch": epoch,
@@ -994,6 +1167,7 @@ def run_training(args):
                 early_stopping_score,
                 min_delta=args.early_stopping_min_delta,
             )
+            lr_reduced = step_lr_scheduler(scheduler, optimizer, current_score)
             if is_best_score:
                 best_score = current_score
                 best_epoch = epoch
@@ -1009,6 +1183,8 @@ def run_training(args):
                         best_score=best_score,
                         best_epoch=best_epoch,
                         optimizer=optimizer,
+                        scheduler=scheduler,
+                        grad_scaler=grad_scaler,
                         resumed_from_checkpoint=resume_checkpoint_path,
                     ),
                     best_checkpoint_path,
@@ -1032,6 +1208,9 @@ def run_training(args):
             )
             if args.early_stopping_patience > 0:
                 message += f" patience={epochs_without_improvement}/{args.early_stopping_patience}"
+            message += f" lr={optimizer_lr_summary(optimizer)}"
+            if lr_reduced:
+                message += " lr_reduced=true"
             print(message)
             logger.info(message)
 
@@ -1064,6 +1243,8 @@ def run_training(args):
             best_score=best_score,
             best_epoch=best_epoch,
             optimizer=optimizer,
+            scheduler=scheduler,
+            grad_scaler=grad_scaler,
             resumed_from_checkpoint=resume_checkpoint_path,
         ),
         checkpoint_path,
@@ -1102,6 +1283,14 @@ def run_training(args):
         "decoder_lr": args.decoder_lr or args.lr,
         "encoder_lr": args.encoder_lr,
         "weight_decay": args.weight_decay,
+        "amp_requested": bool(args.amp),
+        "amp_enabled": amp_enabled,
+        "lr_scheduler": args.lr_scheduler,
+        "lr_scheduler_factor": args.lr_scheduler_factor,
+        "lr_scheduler_patience": args.lr_scheduler_patience,
+        "lr_scheduler_threshold": args.lr_scheduler_threshold,
+        "lr_scheduler_min_lr": args.lr_scheduler_min_lr,
+        "final_learning_rates": optimizer_lr_values(optimizer),
         "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
@@ -1121,6 +1310,8 @@ def run_training(args):
         "resumed_from_checkpoint": str(resume_checkpoint_path) if resume_checkpoint_path else None,
         "resumed_from_epoch": resumed_from_epoch,
         "optimizer_resumed": optimizer_resumed,
+        "lr_scheduler_resumed": scheduler_resumed,
+        "grad_scaler_resumed": grad_scaler_resumed,
         "metrics_path": str(metrics_path),
         "checkpoint_path": str(checkpoint_path),
         "best_checkpoint_path": str(best_checkpoint_path),
@@ -1171,6 +1362,8 @@ def run_training(args):
         "early_stopped": early_stopped,
         "early_stop_epoch": early_stop_epoch,
         "optimizer_resumed": optimizer_resumed,
+        "lr_scheduler_resumed": scheduler_resumed,
+        "grad_scaler_resumed": grad_scaler_resumed,
     }
 
 

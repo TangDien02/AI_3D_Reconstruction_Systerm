@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-lr", type=float, default=None)
     parser.add_argument("--encoder-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lr-scheduler", choices=["none", "plateau"], default="plateau")
+    parser.add_argument("--lr-scheduler-factor", type=float, default=0.5)
+    parser.add_argument("--lr-scheduler-patience", type=int, default=3)
+    parser.add_argument("--lr-scheduler-threshold", type=float, default=1e-4)
+    parser.add_argument("--lr-scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument(
         "--augment",
         action=argparse.BooleanOptionalAction,
@@ -102,6 +108,14 @@ def parse_args() -> argparse.Namespace:
         args.early_stopping_min_epochs = 0
     if args.early_stopping_min_delta < 0:
         args.early_stopping_min_delta = 0.0
+    if args.lr_scheduler_factor <= 0 or args.lr_scheduler_factor >= 1:
+        args.lr_scheduler_factor = 0.5
+    if args.lr_scheduler_patience < 0:
+        args.lr_scheduler_patience = 0
+    if args.lr_scheduler_threshold < 0:
+        args.lr_scheduler_threshold = 0.0
+    if args.lr_scheduler_min_lr < 0:
+        args.lr_scheduler_min_lr = 0.0
     return args
 
 
@@ -178,6 +192,12 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         decoder_lr=args.decoder_lr,
         encoder_lr=args.encoder_lr,
         weight_decay=args.weight_decay,
+        amp=args.amp,
+        lr_scheduler=args.lr_scheduler,
+        lr_scheduler_factor=args.lr_scheduler_factor,
+        lr_scheduler_patience=args.lr_scheduler_patience,
+        lr_scheduler_threshold=args.lr_scheduler_threshold,
+        lr_scheduler_min_lr=args.lr_scheduler_min_lr,
         augment=args.augment,
         augment_brightness=args.augment_brightness,
         augment_contrast=args.augment_contrast,

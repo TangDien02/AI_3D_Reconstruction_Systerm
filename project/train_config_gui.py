@@ -99,6 +99,12 @@ class TrainingConfigGui(tk.Tk):
         self.decoder_lr_var = tk.StringVar(value="0.0001")
         self.encoder_lr_var = tk.StringVar(value="0.00001")
         self.weight_decay_var = tk.StringVar(value="0.0001")
+        self.amp_var = tk.BooleanVar(value=True)
+        self.lr_scheduler_var = tk.StringVar(value="plateau")
+        self.lr_scheduler_factor_var = tk.StringVar(value="0.5")
+        self.lr_scheduler_patience_var = tk.StringVar(value="3")
+        self.lr_scheduler_threshold_var = tk.StringVar(value="0.0001")
+        self.lr_scheduler_min_lr_var = tk.StringVar(value="0.000001")
         self.unfreeze_epoch_var = tk.StringVar(value="10")
         self.augment_var = tk.BooleanVar(value=True)
         self.early_stopping_patience_var = tk.StringVar(value="8")
@@ -206,6 +212,10 @@ class TrainingConfigGui(tk.Tk):
             ("Decoder LR", self.decoder_lr_var),
             ("Encoder LR", self.encoder_lr_var),
             ("Weight decay", self.weight_decay_var),
+            ("LR factor", self.lr_scheduler_factor_var),
+            ("LR patience", self.lr_scheduler_patience_var),
+            ("LR threshold", self.lr_scheduler_threshold_var),
+            ("LR min", self.lr_scheduler_min_lr_var),
             ("Unfreeze epoch", self.unfreeze_epoch_var),
             ("Early stop patience", self.early_stopping_patience_var),
             ("Early stop min epochs", self.early_stopping_min_epochs_var),
@@ -225,10 +235,26 @@ class TrainingConfigGui(tk.Tk):
             width=24,
         ).grid(row=metric_row, column=1, sticky=tk.W, padx=8, pady=5)
 
+        scheduler_row = metric_row + 1
+        ttk.Label(train_frame, text="LR scheduler").grid(row=scheduler_row, column=0, sticky=tk.W, padx=8, pady=5)
+        ttk.Combobox(
+            train_frame,
+            textvariable=self.lr_scheduler_var,
+            values=["plateau", "none"],
+            state="readonly",
+            width=16,
+        ).grid(row=scheduler_row, column=1, sticky=tk.W, padx=8, pady=5)
+
         ttk.Checkbutton(train_frame, text="Force CPU", variable=self.force_cpu_var).grid(
-            row=metric_row + 1,
+            row=scheduler_row + 1,
             column=0,
-            columnspan=2,
+            sticky=tk.W,
+            padx=8,
+            pady=5,
+        )
+        ttk.Checkbutton(train_frame, text="AMP", variable=self.amp_var).grid(
+            row=scheduler_row + 1,
+            column=1,
             sticky=tk.W,
             padx=8,
             pady=5,
@@ -386,6 +412,7 @@ class TrainingConfigGui(tk.Tk):
             "epochs": self.epochs_var,
             "batch_size": self.batch_size_var,
             "unfreeze_epoch": self.unfreeze_epoch_var,
+            "lr_scheduler_patience": self.lr_scheduler_patience_var,
             "early_stopping_patience": self.early_stopping_patience_var,
             "early_stopping_min_epochs": self.early_stopping_min_epochs_var,
             "num_points": self.num_points_var,
@@ -397,7 +424,7 @@ class TrainingConfigGui(tk.Tk):
             if key in {"max_samples", "unfreeze_epoch"} and text == "":
                 config[key] = None
                 continue
-            if key in {"early_stopping_patience", "early_stopping_min_epochs"} and text == "":
+            if key in {"early_stopping_patience", "early_stopping_min_epochs", "lr_scheduler_patience"} and text == "":
                 config[key] = 0
                 continue
             try:
@@ -405,7 +432,7 @@ class TrainingConfigGui(tk.Tk):
             except ValueError:
                 errors.append(f"{key} phai la so nguyen.")
                 continue
-            if key in {"early_stopping_patience", "early_stopping_min_epochs"}:
+            if key in {"early_stopping_patience", "early_stopping_min_epochs", "lr_scheduler_patience"}:
                 if value < 0:
                     errors.append(f"{key} phai lon hon hoac bang 0.")
             elif value <= 0:
@@ -423,6 +450,9 @@ class TrainingConfigGui(tk.Tk):
             "decoder_lr": self.decoder_lr_var,
             "encoder_lr": self.encoder_lr_var,
             "weight_decay": self.weight_decay_var,
+            "lr_scheduler_factor": self.lr_scheduler_factor_var,
+            "lr_scheduler_threshold": self.lr_scheduler_threshold_var,
+            "lr_scheduler_min_lr": self.lr_scheduler_min_lr_var,
             "early_stopping_min_delta": self.early_stopping_min_delta_var,
         }.items():
             text = variable.get().strip()
@@ -434,9 +464,12 @@ class TrainingConfigGui(tk.Tk):
             except ValueError:
                 errors.append(f"{key} phai la so.")
                 continue
-            if key == "early_stopping_min_delta":
+            if key in {"early_stopping_min_delta", "lr_scheduler_threshold", "lr_scheduler_min_lr"}:
                 if value < 0:
                     errors.append(f"{key} phai lon hon hoac bang 0.")
+            elif key == "lr_scheduler_factor":
+                if value <= 0 or value >= 1:
+                    errors.append(f"{key} phai nam trong khoang 0 den 1.")
             elif value <= 0:
                 errors.append(f"{key} phai lon hon 0.")
             config[key] = value
@@ -560,6 +593,13 @@ class TrainingConfigGui(tk.Tk):
             f"min_delta={numeric.get('early_stopping_min_delta', 0.0001)}, "
             f"min_epochs={numeric.get('early_stopping_min_epochs', 12)}."
         )
+        infos.append(
+            "Performance: "
+            f"AMP={'enabled' if self.amp_var.get() else 'disabled'}, "
+            f"scheduler={self.lr_scheduler_var.get().strip()} "
+            f"(factor={numeric.get('lr_scheduler_factor', 0.5)}, "
+            f"patience={numeric.get('lr_scheduler_patience', 3)})."
+        )
 
         self.write_status(errors, warnings, infos)
         if show_dialog:
@@ -637,10 +677,21 @@ class TrainingConfigGui(tk.Tk):
             self.early_stopping_min_delta_var.get().strip() or "0.0001",
             "--early-stopping-min-epochs",
             self.early_stopping_min_epochs_var.get().strip() or "12",
+            "--lr-scheduler",
+            self.lr_scheduler_var.get().strip() or "plateau",
+            "--lr-scheduler-factor",
+            self.lr_scheduler_factor_var.get().strip() or "0.5",
+            "--lr-scheduler-patience",
+            self.lr_scheduler_patience_var.get().strip() or "3",
+            "--lr-scheduler-threshold",
+            self.lr_scheduler_threshold_var.get().strip() or "0.0001",
+            "--lr-scheduler-min-lr",
+            self.lr_scheduler_min_lr_var.get().strip() or "0.000001",
         ]
         command.append("--pretrained" if self.pretrained_var.get() else "--no-pretrained")
         command.append("--freeze-encoder" if self.freeze_encoder_var.get() else "--no-freeze-encoder")
         command.append("--augment" if self.augment_var.get() else "--no-augment")
+        command.append("--amp" if self.amp_var.get() else "--no-amp")
         if self.max_samples_var.get().strip():
             command.extend(["--max-samples", self.max_samples_var.get().strip()])
         if self.unfreeze_epoch_var.get().strip():
