@@ -454,6 +454,28 @@ metrics/fixed_visual_benchmark_summary.json
 outputs/fixed_visual_comparison/<benchmark_index>_<sample_id>_comparison.png
 ```
 
+### 8.6 Huong loss moi de cai thien do hoan thien point cloud
+
+Sau khi co visual baseline decoder, buoc tiep theo la giu nguyen encoder/decoder va cai thien training objective:
+
+- `detail_aware_coverage_loss`: tang trong so cho cac vung GT thua/mong, giup model bot bo quen chan ghe, canh, vien.
+- `point_uniformity_loss`: ep nearest-neighbor spacing cua point predict deu hon, giam hien tuong point bi tum day mot vung.
+
+Hai loss nay nam trong:
+
+```text
+project/src/metrics/losses.py
+project/src/training/training_pipeline.py
+```
+
+Lenh de train run so sanh:
+
+```powershell
+python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 40 --batch-size 16 --encoder-name resnet50 --feature-dim 2048 --decoder-type refine_mlp --coarse-points 512 --refine-offset-scale 0.08 --num-points 2048 --output-dir results/visual_loss_detail_uniform_refine_mlp_chair --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.005 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512 --detail-coverage-weight 0.5 --detail-coverage-k 8 --detail-coverage-sample-size 512 --detail-coverage-max-weight 3.0 --detail-coverage-exponent 1.0 --uniformity-weight 0.003 --uniformity-sample-size 512 --eval-max-samples 128 --comparison-index 0
+```
+
+Run nay se duoc so sanh voi visual baseline v2 bang fixed benchmark 10 sample.
+
 ## 9. Trang thai hien tai va viec nen lam tiep
 
 Da hoan thanh:

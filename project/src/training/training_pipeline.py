@@ -35,8 +35,10 @@ if str(PROJECT_DIR) not in sys.path:
 from src.data.dataloader import Pix3DDataset, ProcessedPix3DDataset
 from src.metrics.losses import (
     chamfer_distance,
+    detail_aware_coverage_loss,
     f_score,
     point_repulsion_loss,
+    point_uniformity_loss,
     weighted_chamfer_distance,
 )
 from src.models.object_reconstruction import build_object_reconstruction_model
@@ -156,6 +158,13 @@ def train_one_epoch(
     repulsion_k=8,
     repulsion_radius=0.03,
     repulsion_sample_size=512,
+    detail_coverage_weight=0.0,
+    detail_coverage_k=8,
+    detail_coverage_sample_size=512,
+    detail_coverage_max_weight=3.0,
+    detail_coverage_exponent=1.0,
+    uniformity_weight=0.0,
+    uniformity_sample_size=512,
 ):
     model.train()
     total_loss = 0.0
@@ -180,6 +189,22 @@ def train_one_epoch(
                     sample_size=repulsion_sample_size,
                 )
                 loss = loss + repulsion_weight * repulsion
+            if detail_coverage_weight > 0:
+                detail_coverage = detail_aware_coverage_loss(
+                    points_pred,
+                    points_gt,
+                    k=detail_coverage_k,
+                    sample_size=detail_coverage_sample_size,
+                    max_weight=detail_coverage_max_weight,
+                    exponent=detail_coverage_exponent,
+                )
+                loss = loss + detail_coverage_weight * detail_coverage
+            if uniformity_weight > 0:
+                uniformity = point_uniformity_loss(
+                    points_pred,
+                    sample_size=uniformity_sample_size,
+                )
+                loss = loss + uniformity_weight * uniformity
 
         if amp_enabled and grad_scaler is not None:
             grad_scaler.scale(loss).backward()
@@ -309,6 +334,43 @@ def parse_args():
         help="Number of predicted points sampled for repulsion loss. Use 0 to use all points.",
     )
     parser.add_argument(
+        "--detail-coverage-weight",
+        type=float,
+        default=0.0,
+        help="Weight for detail-aware GT coverage loss. Use >0 to emphasize sparse/thin GT regions.",
+    )
+    parser.add_argument("--detail-coverage-k", type=int, default=8)
+    parser.add_argument(
+        "--detail-coverage-sample-size",
+        type=int,
+        default=512,
+        help="Number of GT points sampled for detail-aware coverage. Use 0 to use all GT points.",
+    )
+    parser.add_argument(
+        "--detail-coverage-max-weight",
+        type=float,
+        default=3.0,
+        help="Maximum per-GT-point local detail weight.",
+    )
+    parser.add_argument(
+        "--detail-coverage-exponent",
+        type=float,
+        default=1.0,
+        help="Exponent applied to sparse-region GT weights.",
+    )
+    parser.add_argument(
+        "--uniformity-weight",
+        type=float,
+        default=0.0,
+        help="Weight for nearest-neighbor spacing uniformity loss.",
+    )
+    parser.add_argument(
+        "--uniformity-sample-size",
+        type=int,
+        default=512,
+        help="Number of predicted points sampled for uniformity loss. Use 0 to use all points.",
+    )
+    parser.add_argument(
         "--augment",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -417,6 +479,20 @@ def parse_args():
         args.repulsion_radius = 0.0
     if args.repulsion_sample_size < 0:
         args.repulsion_sample_size = 0
+    if args.detail_coverage_weight < 0:
+        args.detail_coverage_weight = 0.0
+    if args.detail_coverage_k < 0:
+        args.detail_coverage_k = 0
+    if args.detail_coverage_sample_size < 0:
+        args.detail_coverage_sample_size = 0
+    if args.detail_coverage_max_weight < 1:
+        args.detail_coverage_max_weight = 1.0
+    if args.detail_coverage_exponent < 0:
+        args.detail_coverage_exponent = 0.0
+    if args.uniformity_weight < 0:
+        args.uniformity_weight = 0.0
+    if args.uniformity_sample_size < 0:
+        args.uniformity_sample_size = 0
     if args.coarse_points <= 0:
         args.coarse_points = 512
     if args.refine_offset_scale <= 0:
@@ -476,6 +552,13 @@ def build_checkpoint(
         "repulsion_k": getattr(args, "repulsion_k", 8),
         "repulsion_radius": getattr(args, "repulsion_radius", 0.03),
         "repulsion_sample_size": getattr(args, "repulsion_sample_size", 512),
+        "detail_coverage_weight": getattr(args, "detail_coverage_weight", 0.0),
+        "detail_coverage_k": getattr(args, "detail_coverage_k", 8),
+        "detail_coverage_sample_size": getattr(args, "detail_coverage_sample_size", 512),
+        "detail_coverage_max_weight": getattr(args, "detail_coverage_max_weight", 3.0),
+        "detail_coverage_exponent": getattr(args, "detail_coverage_exponent", 1.0),
+        "uniformity_weight": getattr(args, "uniformity_weight", 0.0),
+        "uniformity_sample_size": getattr(args, "uniformity_sample_size", 512),
         "unfreeze_epoch": getattr(args, "unfreeze_epoch", None),
         "early_stopping_patience": getattr(args, "early_stopping_patience", 0),
         "early_stopping_min_delta": getattr(args, "early_stopping_min_delta", 0.0),
@@ -1015,6 +1098,20 @@ def run_training(args):
         args.repulsion_radius = 0.03
     if not hasattr(args, "repulsion_sample_size"):
         args.repulsion_sample_size = 512
+    if not hasattr(args, "detail_coverage_weight"):
+        args.detail_coverage_weight = 0.0
+    if not hasattr(args, "detail_coverage_k"):
+        args.detail_coverage_k = 8
+    if not hasattr(args, "detail_coverage_sample_size"):
+        args.detail_coverage_sample_size = 512
+    if not hasattr(args, "detail_coverage_max_weight"):
+        args.detail_coverage_max_weight = 3.0
+    if not hasattr(args, "detail_coverage_exponent"):
+        args.detail_coverage_exponent = 1.0
+    if not hasattr(args, "uniformity_weight"):
+        args.uniformity_weight = 0.0
+    if not hasattr(args, "uniformity_sample_size"):
+        args.uniformity_sample_size = 512
     if not hasattr(args, "unfreeze_epoch"):
         args.unfreeze_epoch = None
     if not hasattr(args, "augment"):
@@ -1052,6 +1149,13 @@ def run_training(args):
     args.repulsion_k = max(0, int(args.repulsion_k or 0))
     args.repulsion_radius = max(0.0, float(args.repulsion_radius or 0.0))
     args.repulsion_sample_size = max(0, int(args.repulsion_sample_size or 0))
+    args.detail_coverage_weight = max(0.0, float(args.detail_coverage_weight or 0.0))
+    args.detail_coverage_k = max(0, int(args.detail_coverage_k or 0))
+    args.detail_coverage_sample_size = max(0, int(args.detail_coverage_sample_size or 0))
+    args.detail_coverage_max_weight = max(1.0, float(args.detail_coverage_max_weight or 1.0))
+    args.detail_coverage_exponent = max(0.0, float(args.detail_coverage_exponent or 0.0))
+    args.uniformity_weight = max(0.0, float(args.uniformity_weight or 0.0))
+    args.uniformity_sample_size = max(0, int(args.uniformity_sample_size or 0))
     if args.decoder_type not in {"mlp", "refine_mlp"}:
         args.decoder_type = "mlp"
     args.coarse_points = max(1, int(args.coarse_points or 512))
@@ -1232,12 +1336,19 @@ def run_training(args):
     else:
         logger.info("LR scheduler disabled.")
     logger.info(
-        "Training loss: weighted_chamfer gt_weight=%s repulsion_weight=%s repulsion_k=%s repulsion_radius=%s repulsion_sample_size=%s",
+        "Training loss: weighted_chamfer gt_weight=%s repulsion_weight=%s repulsion_k=%s repulsion_radius=%s repulsion_sample_size=%s detail_coverage_weight=%s detail_coverage_k=%s detail_coverage_sample_size=%s detail_coverage_max_weight=%s detail_coverage_exponent=%s uniformity_weight=%s uniformity_sample_size=%s",
         args.chamfer_gt_weight,
         args.repulsion_weight,
         args.repulsion_k,
         args.repulsion_radius,
         args.repulsion_sample_size,
+        args.detail_coverage_weight,
+        args.detail_coverage_k,
+        args.detail_coverage_sample_size,
+        args.detail_coverage_max_weight,
+        args.detail_coverage_exponent,
+        args.uniformity_weight,
+        args.uniformity_sample_size,
     )
 
     metrics_path = metric_dir / "training_metrics.csv"
@@ -1362,6 +1473,13 @@ def run_training(args):
                 repulsion_k=args.repulsion_k,
                 repulsion_radius=args.repulsion_radius,
                 repulsion_sample_size=args.repulsion_sample_size,
+                detail_coverage_weight=args.detail_coverage_weight,
+                detail_coverage_k=args.detail_coverage_k,
+                detail_coverage_sample_size=args.detail_coverage_sample_size,
+                detail_coverage_max_weight=args.detail_coverage_max_weight,
+                detail_coverage_exponent=args.detail_coverage_exponent,
+                uniformity_weight=args.uniformity_weight,
+                uniformity_sample_size=args.uniformity_sample_size,
             )
             val_metrics = evaluate(
                 model,
@@ -1520,6 +1638,13 @@ def run_training(args):
         "repulsion_k": args.repulsion_k,
         "repulsion_radius": args.repulsion_radius,
         "repulsion_sample_size": args.repulsion_sample_size,
+        "detail_coverage_weight": args.detail_coverage_weight,
+        "detail_coverage_k": args.detail_coverage_k,
+        "detail_coverage_sample_size": args.detail_coverage_sample_size,
+        "detail_coverage_max_weight": args.detail_coverage_max_weight,
+        "detail_coverage_exponent": args.detail_coverage_exponent,
+        "uniformity_weight": args.uniformity_weight,
+        "uniformity_sample_size": args.uniformity_sample_size,
         "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
