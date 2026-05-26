@@ -999,6 +999,11 @@ def run_post_training_outputs(
                 max_samples=getattr(args, "eval_max_samples", None),
                 batch_size=args.batch_size,
                 f_threshold=args.f_threshold,
+                fine_threshold=getattr(args, "fine_threshold", None),
+                loose_threshold=getattr(args, "loose_threshold", None),
+                density_sample_size=getattr(args, "density_sample_size", 512),
+                voxel_resolution=getattr(args, "voxel_resolution", 32),
+                occupancy_dilation=getattr(args, "occupancy_dilation", 1),
                 device=str(device),
             )
         )
@@ -1021,6 +1026,11 @@ def run_post_training_outputs(
                 index=getattr(args, "comparison_index", 0),
                 max_samples=None,
                 f_threshold=args.f_threshold,
+                fine_threshold=getattr(args, "fine_threshold", None),
+                loose_threshold=getattr(args, "loose_threshold", None),
+                density_sample_size=getattr(args, "density_sample_size", 512),
+                voxel_resolution=getattr(args, "voxel_resolution", 32),
+                occupancy_dilation=getattr(args, "occupancy_dilation", 1),
                 max_plot_points=getattr(args, "max_plot_points", 2048),
                 device=str(device),
                 show=False,
