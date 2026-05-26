@@ -15,7 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.data.dataloader import ProcessedPix3DDataset
 from src.inference.baseline_inference import load_baseline_model, model_points, select_device
-from src.metrics.losses import chamfer_distance, f_score
+from src.metrics.pointcloud_quality import ALL_POINTCLOUD_METRICS, compute_pointcloud_quality_metrics
 
 
 @torch.no_grad()
@@ -38,10 +38,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
     rows = []
-    total_cd = 0.0
-    total_f = 0.0
-    total_precision = 0.0
-    total_recall = 0.0
+    metric_totals = {name: 0.0 for name in ALL_POINTCLOUD_METRICS}
     sample_count = 0
 
     for batch_index, batch in enumerate(dataloader, start=1):
@@ -49,32 +46,34 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
         points_gt = batch["points_gt"].to(device)
         points_pred = model_points(model, images)
 
-        batch_cd = chamfer_distance(points_pred, points_gt).item()
-        batch_f, batch_precision, batch_recall = f_score(
+        batch_metrics = compute_pointcloud_quality_metrics(
             points_pred,
             points_gt,
             threshold=args.f_threshold,
+            fine_threshold=getattr(args, "fine_threshold", None),
+            loose_threshold=getattr(args, "loose_threshold", None),
+            density_sample_size=getattr(args, "density_sample_size", 512),
+            voxel_resolution=getattr(args, "voxel_resolution", 32),
+            occupancy_dilation=getattr(args, "occupancy_dilation", 1),
         )
         current_batch_size = images.shape[0]
         sample_count += current_batch_size
-        total_cd += batch_cd * current_batch_size
-        total_f += batch_f * current_batch_size
-        total_precision += batch_precision * current_batch_size
-        total_recall += batch_recall * current_batch_size
+        for metric_name in ALL_POINTCLOUD_METRICS:
+            metric_totals[metric_name] += batch_metrics[metric_name] * current_batch_size
 
         rows.append(
             {
                 "batch": batch_index,
                 "batch_size": current_batch_size,
-                "chamfer_distance": batch_cd,
-                "f_score": batch_f,
-                "precision": batch_precision,
-                "recall": batch_recall,
+                **batch_metrics,
             }
         )
         print(
             f"batch={batch_index} size={current_batch_size} "
-            f"cd={batch_cd:.6f} f={batch_f:.4f}"
+            f"cd={batch_metrics['chamfer_distance']:.6f} "
+            f"f={batch_metrics['f_score']:.4f} "
+            f"vc={batch_metrics['visual_completeness_score']:.4f} "
+            f"empty={batch_metrics['empty_space_violation']:.4f}"
         )
 
     if sample_count == 0:
@@ -84,7 +83,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
     with batch_metrics_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=["batch", "batch_size", "chamfer_distance", "f_score", "precision", "recall"],
+            fieldnames=["batch", "batch_size", *ALL_POINTCLOUD_METRICS],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -95,11 +94,22 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
         "samples": sample_count,
         "batch_size": args.batch_size,
         "checkpoint_path": str(checkpoint_path),
-        "chamfer_distance": total_cd / sample_count,
-        "f_score": total_f / sample_count,
-        "precision": total_precision / sample_count,
-        "recall": total_recall / sample_count,
+        **{metric_name: metric_totals[metric_name] / sample_count for metric_name in ALL_POINTCLOUD_METRICS},
         "batch_metrics_path": str(batch_metrics_path),
+        "visual_diagnostics": {
+            "fine_threshold": getattr(args, "fine_threshold", None) or args.f_threshold * 0.5,
+            "loose_threshold": getattr(args, "loose_threshold", None) or args.f_threshold * 2.0,
+            "voxel_resolution": getattr(args, "voxel_resolution", 32),
+            "occupancy_dilation": getattr(args, "occupancy_dilation", 1),
+            "density_sample_size": getattr(args, "density_sample_size", 512),
+            "notes": {
+                "fine_f_score": "F-score at stricter threshold; useful for thin details such as chair legs.",
+                "empty_space_violation": "Predicted occupied voxels outside dilated GT occupancy; lower is better for holes/open spaces.",
+                "density_score": "Nearest-neighbor uniformity score; higher is better and lower clumping is expected.",
+                "visual_completeness_score": "Unified visual score from surface, detail, structure, empty-space, and density components.",
+                "visual_quality_score": "Backward-compatible alias of visual_completeness_score.",
+            },
+        },
     }
     summary_path = metric_dir / f"{args.split}_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -120,6 +130,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument("--fine-threshold", type=float, default=None)
+    parser.add_argument("--loose-threshold", type=float, default=None)
+    parser.add_argument("--density-sample-size", type=int, default=512)
+    parser.add_argument("--voxel-resolution", type=int, default=32)
+    parser.add_argument("--occupancy-dilation", type=int, default=1)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     return parser.parse_args()
 

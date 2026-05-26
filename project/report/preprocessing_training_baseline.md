@@ -270,7 +270,191 @@ Ket luan tu benchmark tuan 4:
 - Sau benchmark, cau hinh scheduler duoc dieu chinh bot gat hon thanh `factor=0.7`, `patience=5` de giam LR cham hon va cho model them thoi gian cai thien.
 - Khi bao cao, nen mo ta scheduler la "da tich hop va da benchmark, can danh gia them", con AMP la "duoc chap nhan giu lai".
 
-## 8. Trang thai hien tai va viec nen lam tiep
+## 8. Lich su cai tien decoder va metric visual
+
+Muc tieu giai doan nay chuyen tu chi toi uu Chamfer Distance sang cai thien chat luong visual cua point cloud, dac biet voi vat the ghe co chi tiet manh nhu chan ghe.
+
+### 8.1 MLP baseline
+
+Decoder MLP hien tai tuy don gian nhung la baseline manh nhat theo Chamfer Distance:
+
+```text
+decoder=mlp
+best_val_cd=0.009332
+best_epoch=23
+pix3d_04666: CD=0.012302, F=0.630654, P=0.614258, R=0.647949
+```
+
+Nhan xet:
+
+- Toi uu Chamfer tot.
+- Vung than ghe/lung ghe kha on.
+- Van co nhieu diem bi rai va cac chi tiet manh nhu chan ghe con bua.
+
+### 8.2 Atlas patch decoder
+
+Da thu decoder kieu AtlasNet patch-based:
+
+```text
+decoder=atlas
+num_patches=16
+best_val_cd=0.010674
+pix3d_04666: CD=0.015127, F=0.5530, P=0.4922, R=0.6309
+```
+
+Nhan xet:
+
+- Khong thang MLP theo metric.
+- Visual xau hon do sinh artifact dang patch/grid/stripe.
+- Ket luan: khong dung Atlas 16 patches lam huong final.
+
+### 8.3 Coarse-to-fine refine MLP
+
+Da them decoder refine_mlp theo huong coarse-to-fine:
+
+```text
+decoder=refine_mlp
+coarse_points=512
+refine_offset_scale=0.08
+best_val_cd=0.009866
+best_epoch=19
+pix3d_04666: CD=0.012615, F=0.7178, P=0.7373, R=0.6992
+```
+
+Nhan xet:
+
+- Chamfer Distance kem MLP mot chut.
+- F-score, precision va recall tren sample visual chinh tot hon MLP ro ret.
+- Point cloud nhin gon hon, it diem lac hon, nhung chi tiet chan ghe van chua tot.
+- Ket luan tam thoi: MLP van la baseline metric CD, refine_mlp la ung vien visual candidate.
+
+### 8.4 Ly do test them best metric F-score
+
+Vi muc tieu do an la visual dep de demo/xuat model 3D, can thu chon checkpoint theo F-score thay vi chi theo Chamfer Distance:
+
+```text
+--best-metric val_f_score
+```
+
+Muc dich:
+
+- Chamfer Distance uu tien khoang cach trung binh, co the chap nhan point cloud hoi bua neu diem gan surface.
+- F-score uu tien so diem nam dung vung surface trong threshold, phu hop hon voi visual point cloud.
+
+Ket qua run refine_mlp chon checkpoint theo F-score:
+
+```text
+output_dir=results/compare_decoder_C_refine_mlp_fscore_chair
+best_metric=val_f_score
+best_epoch=27
+best_val_f_score=0.633117
+val_cd_at_best_f=0.009715
+early_stop_epoch=35
+pix3d_04666: CD=0.020775, F=0.5988, P=0.5625, R=0.6401
+```
+
+Bang tong hop cac checkpoint duoc chon cua cac run decoder chinh:
+
+| Run | Checkpoint metric | Selected epoch | Selected val CD | Selected val F | Test avg CD | Test avg F | pix3d_04666 CD | pix3d_04666 F |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MLP | val_chamfer_distance | 23 | 0.009332 | 0.6299 | 0.019561 | 0.536763 | 0.012302 | 0.6307 |
+| refine_mlp | val_chamfer_distance | 19 | 0.009866 | 0.6210 | 0.020491 | 0.538125 | 0.012615 | 0.7178 |
+| refine_mlp | val_f_score | 27 | 0.009715 | 0.633117 | 0.020300 | 0.538038 | 0.020775 | 0.5988 |
+
+Ket luan sau khi test F-score:
+
+- Chon checkpoint theo `val_f_score` giup validation F-score cao nhat trong cac run refine_mlp.
+- Tuy nhien, sample visual chinh `pix3d_04666` lai xau hon run refine_mlp chon theo CD: F-score giam tu `0.7178` xuong `0.5988`, CD tang tu `0.012615` len `0.020775`.
+- Dieu nay cho thay F-score trung binh tren validation khong dam bao moi sample demo deu dep hon.
+- Quyet dinh tam thoi: giu MLP la baseline metric CD tot nhat; giu refine_mlp chon theo CD lam visual candidate tot hon tren sample `pix3d_04666`; khong dung Atlas cho final.
+- Khi chon model demo cuoi cung, can so sanh tren nhieu sample co dinh thay vi dua vao mot metric duy nhat.
+
+### 8.5 Bo sung visual diagnostic metrics
+
+Vi metrics tuan 3 da chot chinh thuc, bo metrics moi khong thay the Chamfer Distance/F-score. No duoc dung nhu diagnostic de giai thich vi sao model co the dat metric kha nhung visual van chua dep.
+
+Da them module:
+
+```text
+project/src/metrics/pointcloud_quality.py
+```
+
+Metrics chinh thuc van giu nguyen:
+
+- `chamfer_distance`: lower is better.
+- `f_score`: higher is better.
+- `precision`: higher is better.
+- `recall`: higher is better.
+
+Metrics diagnostic them:
+
+| Metric | Muc dich | Huong tot |
+| --- | --- | --- |
+| `fine_f_score`, `fine_recall` | Do chi tiet nho voi threshold chat hon, huu ich cho chan ghe/canh mong. | Cao hon |
+| `occupancy_iou` | So sanh voxel occupancy giua predict va GT, bat loi hinh dang tong the. | Cao hon |
+| `empty_space_violation` | Phat point predict nam vao vung trong/lo hong cua GT, nhu phan than ghe bi lap day. | Thap hon |
+| `density_score` | Do deu cua point cloud theo nearest-neighbor distance. | Cao hon |
+| `clump_ratio` | Ti le point qua gan nhau, bat loi point bi tum day. | Thap hon |
+| `hausdorff_95` | Do loi xa/outlier o vung kho, on dinh hon max Hausdorff. | Thap hon |
+| `visual_completeness_score` | Diem tong hop visual thong nhat de xep hang model. | Cao hon |
+| `visual_completeness_percent` | `visual_completeness_score` theo thang 0-100 de doc nhanh. | Cao hon |
+
+Cong thuc tong hop tam thoi:
+
+```text
+visual_completeness_score =
+  0.30 * surface_alignment_score
++ 0.25 * detail_preservation_score
++ 0.20 * structure_occupancy_score
++ 0.15 * empty_space_score
++ 0.10 * density_uniformity_score
+```
+
+Ly do:
+
+- `fine_f_score` bo sung cho F-score mac dinh, vi nguong mac dinh co the qua de voi chi tiet mong.
+- `empty_space_violation` va `occupancy_iou` nham vao van de visual hien tai: model hay lap day khoang trong trong than ghe.
+- `density_score` va `clump_ratio` nham vao van de point bi tum lai mot cho.
+- `visual_completeness_score` chi dung de ranking/so sanh cac run demo, khong dung lam metric chinh thuc cua do an neu chua co thoi gian validate rong.
+- `visual_quality_score` duoc giu lai nhu alias tuong thich cu cua `visual_completeness_score`.
+
+Output moi:
+
+```text
+metrics/test_batch_metrics.csv
+metrics/test_summary.json
+outputs/test_visual_batch_metrics.png
+outputs/test_visual_summary_metrics.png
+outputs/comparison/<sample_id>_metrics.json
+```
+
+Da co them fixed benchmark 10 sample chair tren test split:
+
+```text
+benchmarks/fixed_test_samples_chair.csv
+```
+
+Cach chon:
+
+- Category `chair`, split `test`.
+- Giu `pix3d_04666` lam sample anchor vi day la case dang duoc theo doi visual.
+- Chon 9 sample tiep theo theo thu tu test da filter chair, moi sample co `model_uid` khac nhau de tranh benchmark bi lap cung mot CAD model.
+
+Lenh chay:
+
+```powershell
+python -m src.evaluation.evaluate_fixed_visual_benchmark --manifest benchmarks/fixed_test_samples_chair.csv --checkpoint results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt --output-dir results/fixed_visual_benchmark_baseline --device cuda
+```
+
+Output:
+
+```text
+metrics/fixed_visual_benchmark.csv
+metrics/fixed_visual_benchmark_summary.json
+outputs/fixed_visual_comparison/<benchmark_index>_<sample_id>_comparison.png
+```
+
+## 9. Trang thai hien tai va viec nen lam tiep
 
 Da hoan thanh:
 
@@ -290,7 +474,7 @@ Can cai thien tiep:
 - Mo rong backend inference tu anh don sang video/scan 360 neu can demo end-to-end.
 - Chuyen giao dien sang dung endpoint `/reconstruct-image` sau khi backend ky thuat on dinh.
 
-## 9. Lenh ky thuat rut gon
+## 10. Lenh ky thuat rut gon
 
 Danh sach lenh cai dat, preprocessing, training, evaluation, inference va backend da duoc gom tai:
 

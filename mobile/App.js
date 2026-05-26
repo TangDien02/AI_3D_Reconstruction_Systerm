@@ -16,7 +16,8 @@ const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.1.3
 const DETECT_FRAME_WIDTH = 640;
 const DETECT_CAPTURE_QUALITY = 0.5;
 const DETECT_UPLOAD_COMPRESS = 0.65;
-const DETECT_COOLDOWN_MS = 180;
+const DETECT_COOLDOWN_MS = 350;
+const DETECT_EMPTY_HOLD_MS = 900;
 const RECON_CAPTURE_QUALITY = 0.92;
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
@@ -29,6 +30,8 @@ export default function App() {
   const cameraRef = useRef(null);
   const scanActiveRef = useRef(false);
   const detectingRef = useRef(false);
+  const detectSequenceRef = useRef(0);
+  const lastStableDetectionRef = useRef(null);
   const [screen, setScreen] = useState('intro');
   const [cameraStatus, setCameraStatus] = useState('Camera đã sẵn sàng.');
   const [isScanning, setIsScanning] = useState(false);
@@ -46,6 +49,8 @@ export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
 
   const clearObjectState = () => {
+    detectSequenceRef.current += 1;
+    lastStableDetectionRef.current = null;
     setDetectedObjects([]);
     setDetectedImageSize(null);
     setLatestDetectImageUri(null);
@@ -122,6 +127,9 @@ export default function App() {
     }
 
     detectingRef.current = true;
+    const requestId = detectSequenceRef.current + 1;
+    detectSequenceRef.current = requestId;
+    const requestStartedAt = Date.now();
     setIsDetecting(true);
 
     try {
@@ -129,7 +137,7 @@ export default function App() {
         quality: DETECT_CAPTURE_QUALITY,
         base64: false,
         shutterSound: false,
-        skipProcessing: true,
+        skipProcessing: false,
       });
       const detectImage = await manipulateAsync(
         photo.uri,
@@ -159,22 +167,46 @@ export default function App() {
 
       const payload = await response.json();
       const objects = Array.isArray(payload.objects) ? payload.objects : [];
+      const imageSize = {
+        width: payload.image_width || detectImage.width || photo.width || 0,
+        height: payload.image_height || detectImage.height || photo.height || 0,
+      };
+      const serverMs = Number(payload.processing_ms || 0);
+      const roundTripMs = Date.now() - requestStartedAt;
 
-      if (scanActiveRef.current) {
+      if (scanActiveRef.current && requestId === detectSequenceRef.current) {
+        if (objects.length > 0) {
+          lastStableDetectionRef.current = {
+            objects,
+            imageUri: detectImage.uri,
+            imageSize,
+            updatedAt: Date.now(),
+          };
+        }
+
+        const stableDetection = lastStableDetectionRef.current;
+        const stableAgeMs = stableDetection ? Date.now() - stableDetection.updatedAt : Infinity;
+        const shouldHoldLastDetection = objects.length === 0 && stableDetection && stableAgeMs <= DETECT_EMPTY_HOLD_MS;
+
         setDetectedObjects(objects);
         setLatestDetectImageUri(detectImage.uri);
-        setDetectedImageSize({
-          width: payload.image_width || detectImage.width || photo.width || 0,
-          height: payload.image_height || detectImage.height || photo.height || 0,
-        });
-        setCameraStatus(
-          objects.length === 0
-            ? 'Dang quet lien tuc. Chua tim thay vat the.'
-            : `Dang quet lien tuc. YOLO detect ${objects.length} vat the.`,
-        );
+        setDetectedImageSize(imageSize);
+
+        if (shouldHoldLastDetection) {
+          setDetectedObjects(stableDetection.objects);
+          setLatestDetectImageUri(stableDetection.imageUri);
+          setDetectedImageSize(stableDetection.imageSize);
+          setCameraStatus(`Dang giu bbox gan nhat (${Math.round(stableAgeMs)}ms). Server ${serverMs}ms, tong ${roundTripMs}ms.`);
+        } else {
+          setCameraStatus(
+            objects.length === 0
+              ? `Dang quet lien tuc. Chua tim thay vat the. Server ${serverMs}ms, tong ${roundTripMs}ms.`
+              : `Dang quet lien tuc. YOLO detect ${objects.length} vat the. Server ${serverMs}ms, tong ${roundTripMs}ms.`,
+          );
+        }
       }
     } catch (error) {
-      if (scanActiveRef.current) {
+      if (scanActiveRef.current && requestId === detectSequenceRef.current) {
         setDetectedObjects([]);
         setDetectedImageSize(null);
         setLatestDetectImageUri(null);
@@ -229,6 +261,7 @@ export default function App() {
     setIsSegmenting(true);
     setReconstructionResult(null);
     scanActiveRef.current = false;
+    detectSequenceRef.current += 1;
     setIsScanning(false);
     setIsDetecting(false);
     setCameraStatus('Dang chup frame full-res de reconstruct...');
@@ -309,6 +342,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      detectSequenceRef.current += 1;
       if (timer) {
         clearTimeout(timer);
       }
@@ -332,12 +366,25 @@ export default function App() {
     const top = object.bbox.y * scale + offsetY;
     const width = object.bbox.width * scale;
     const height = object.bbox.height * scale;
+    const right = left + width;
+    const bottom = top + height;
+    const clampedLeft = Math.max(0, Math.min(cameraLayout.width, left));
+    const clampedTop = Math.max(0, Math.min(cameraLayout.height, top));
+    const clampedRight = Math.max(0, Math.min(cameraLayout.width, right));
+    const clampedBottom = Math.max(0, Math.min(cameraLayout.height, bottom));
+    const clampedWidth = clampedRight - clampedLeft;
+    const clampedHeight = clampedBottom - clampedTop;
 
-    if (width <= 1 || height <= 1) {
+    if (clampedWidth <= 1 || clampedHeight <= 1) {
       return null;
     }
 
-    return { left, top, width, height };
+    return {
+      left: clampedLeft,
+      top: clampedTop,
+      width: clampedWidth,
+      height: clampedHeight,
+    };
   };
 
   const renderDetectionBox = (object) => {
@@ -386,6 +433,7 @@ export default function App() {
               onPress={() => {
                 scanActiveRef.current = false;
                 detectingRef.current = false;
+                detectSequenceRef.current += 1;
                 setIsScanning(false);
                 setIsDetecting(false);
                 setIsSegmenting(false);

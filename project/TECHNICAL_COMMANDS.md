@@ -179,6 +179,59 @@ results/chair_resnet_baseline/metrics/test_batch_metrics.csv
 results/chair_resnet_baseline/metrics/test_summary.json
 ```
 
+Ngoai metrics chinh thuc `chamfer_distance`, `f_score`, `precision`, `recall`, file CSV/JSON con co visual diagnostic metrics:
+
+```text
+fine_f_score / fine_recall   : do chi tiet nho voi threshold chat hon
+occupancy_iou                : IoU voxel occupancy giua predict va ground truth
+empty_space_violation        : diem predict nam vao vung trong/lo hong cua GT, lower is better
+density_score / clump_ratio  : do deu cua point cloud va muc do point bi tum
+visual_completeness_score    : diem tong hop visual thong nhat, higher is better
+visual_completeness_percent  : visual_completeness_score theo thang 0-100
+```
+
+`visual_completeness_score` la metric xep hang chinh cho visual benchmark:
+
+```text
+0.30 * surface_alignment_score
++ 0.25 * detail_preservation_score
++ 0.20 * structure_occupancy_score
++ 0.15 * empty_space_score
++ 0.10 * density_uniformity_score
+```
+
+Co the tinh chinh nguong diagnostic khi can:
+
+```powershell
+python -m src.evaluation.evaluate_baseline --split test --categories chair --batch-size 2 --output-dir results/chair_resnet_baseline --fine-threshold 0.025 --loose-threshold 0.1 --voxel-resolution 32 --occupancy-dilation 1
+```
+
+## 6.1 Fixed visual benchmark 10 sample chair
+
+Dung cung mot bo 10 sample test co dinh de so sanh visual giua cac checkpoint:
+
+```text
+benchmarks/fixed_test_samples_chair.csv
+```
+
+Chay benchmark:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.evaluation.evaluate_fixed_visual_benchmark --manifest benchmarks/fixed_test_samples_chair.csv --checkpoint results/all_categories_resnet50_2048pts_30ep_aug/outputs/checkpoints/best_model.pt --output-dir results/fixed_visual_benchmark_baseline --device cuda
+```
+
+Output:
+
+```text
+results/fixed_visual_benchmark_baseline/
+  metrics/fixed_visual_benchmark.csv
+  metrics/fixed_visual_benchmark_summary.json
+  outputs/fixed_visual_comparison/
+    00_pix3d_04666_comparison.png
+    ...
+```
+
 ## 7. So sanh point cloud predict voi ground truth
 
 ```powershell
@@ -193,6 +246,7 @@ results/chair_resnet_baseline/outputs/comparison/
   <sample_id>_comparison.png
   <sample_id>_pred.npy
   <sample_id>_gt.npy
+  <sample_id>_metrics.json
 ```
 
 ## 8. Inference mot anh va export point cloud

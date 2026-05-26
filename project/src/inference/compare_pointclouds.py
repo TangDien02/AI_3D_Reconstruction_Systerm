@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from src.data.dataloader import ProcessedPix3DDataset
 from src.inference.baseline_inference import load_baseline_model, model_points, select_device
-from src.metrics.losses import chamfer_distance, f_score
+from src.metrics.pointcloud_quality import compute_pointcloud_quality_metrics
 
 
 def sample_points(points: np.ndarray, max_points: int) -> np.ndarray:
@@ -50,15 +51,21 @@ def save_comparison_figure(
     all_points = np.concatenate([pred_plot, gt_plot], axis=0)
 
     fig = plt.figure(figsize=(12, 5.5))
-    fig.suptitle(
+    title = (
         "Point cloud comparison | "
         f"sample={sample_id} | "
         f"CD={metrics['chamfer_distance']:.6f} | "
         f"F={metrics['f_score']:.4f} | "
         f"P={metrics['precision']:.4f} | "
-        f"R={metrics['recall']:.4f}",
-        fontsize=11,
+        f"R={metrics['recall']:.4f}"
     )
+    if "visual_completeness_score" in metrics:
+        title += (
+            f" | VC={metrics['visual_completeness_score']:.4f} | "
+            f"Occ={metrics['occupancy_iou']:.4f} | "
+            f"Empty={metrics['empty_space_violation']:.4f}"
+        )
+    fig.suptitle(title, fontsize=10.5)
 
     ax_pred = fig.add_subplot(121, projection="3d")
     ax_pred.scatter(pred_plot[:, 0], pred_plot[:, 1], pred_plot[:, 2], s=3, alpha=0.7, c="#2563eb")
@@ -123,8 +130,16 @@ def compare_sample(args: argparse.Namespace) -> None:
 
     with torch.no_grad():
         pred_points = model_points(model, image)
-        chamfer = chamfer_distance(pred_points, gt_points).item()
-        fscore, precision, recall = f_score(pred_points, gt_points, threshold=args.f_threshold)
+        metrics = compute_pointcloud_quality_metrics(
+            pred_points,
+            gt_points,
+            threshold=args.f_threshold,
+            fine_threshold=args.fine_threshold,
+            loose_threshold=args.loose_threshold,
+            density_sample_size=args.density_sample_size,
+            voxel_resolution=args.voxel_resolution,
+            occupancy_dilation=args.occupancy_dilation,
+        )
 
     pred_np = pred_points[0].detach().cpu().numpy().astype(np.float32)
     gt_np = gt_points[0].detach().cpu().numpy().astype(np.float32)
@@ -135,12 +150,6 @@ def compare_sample(args: argparse.Namespace) -> None:
     np.save(output_dir / f"{sample_id}_pred.npy", pred_np)
     np.save(output_dir / f"{sample_id}_gt.npy", gt_np)
 
-    metrics = {
-        "chamfer_distance": chamfer,
-        "f_score": fscore,
-        "precision": precision,
-        "recall": recall,
-    }
     figure_path = save_comparison_figure(
         pred_points=pred_np,
         gt_points=gt_np,
@@ -150,6 +159,8 @@ def compare_sample(args: argparse.Namespace) -> None:
         max_plot_points=args.max_plot_points,
         show=args.show,
     )
+    metrics_path = output_dir / f"{sample_id}_metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"Device: {device}")
     print(f"Sample: {sample_id}")
@@ -158,11 +169,25 @@ def compare_sample(args: argparse.Namespace) -> None:
     print(f"GT pointcloud: {sample['pointcloud_path']}")
     print(f"Pred shape: {pred_np.shape}")
     print(f"GT shape: {gt_np.shape}")
-    print(f"Chamfer Distance: {chamfer:.8f}")
-    print(f"F-score: {fscore:.6f}")
-    print(f"Precision: {precision:.6f}")
-    print(f"Recall: {recall:.6f}")
+    print(f"Chamfer Distance: {metrics['chamfer_distance']:.8f}")
+    print(f"F-score: {metrics['f_score']:.6f}")
+    print(f"Precision: {metrics['precision']:.6f}")
+    print(f"Recall: {metrics['recall']:.6f}")
+    print(f"Fine F-score: {metrics['fine_f_score']:.6f}")
+    print(f"Fine Recall: {metrics['fine_recall']:.6f}")
+    print(f"Occupancy IoU: {metrics['occupancy_iou']:.6f}")
+    print(f"Empty-space violation: {metrics['empty_space_violation']:.6f}")
+    print(f"Density score: {metrics['density_score']:.6f}")
+    print(f"Clump ratio: {metrics['clump_ratio']:.6f}")
+    print(f"Surface alignment score: {metrics['surface_alignment_score']:.6f}")
+    print(f"Detail preservation score: {metrics['detail_preservation_score']:.6f}")
+    print(f"Structure occupancy score: {metrics['structure_occupancy_score']:.6f}")
+    print(f"Empty-space score: {metrics['empty_space_score']:.6f}")
+    print(f"Density uniformity score: {metrics['density_uniformity_score']:.6f}")
+    print(f"Visual completeness score: {metrics['visual_completeness_score']:.6f}")
+    print(f"Visual completeness percent: {metrics['visual_completeness_percent']:.2f}")
     print(f"Saved figure: {figure_path}")
+    print(f"Saved metrics JSON: {metrics_path}")
     print(f"Saved predicted NPY: {output_dir / f'{sample_id}_pred.npy'}")
     print(f"Saved GT NPY: {output_dir / f'{sample_id}_gt.npy'}")
 
@@ -180,6 +205,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--output-dir", default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/comparison")
     parser.add_argument("--f-threshold", type=float, default=0.05)
+    parser.add_argument("--fine-threshold", type=float, default=None)
+    parser.add_argument("--loose-threshold", type=float, default=None)
+    parser.add_argument("--density-sample-size", type=int, default=512)
+    parser.add_argument("--voxel-resolution", type=int, default=32)
+    parser.add_argument("--occupancy-dilation", type=int, default=1)
     parser.add_argument("--max-plot-points", type=int, default=2048)
     parser.add_argument("--device", default=None, help="Use cuda, cpu, or leave empty for auto.")
     parser.add_argument("--show", action="store_true", help="Open a matplotlib window after saving the figure.")

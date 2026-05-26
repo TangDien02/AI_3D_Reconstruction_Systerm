@@ -812,6 +812,45 @@ def save_summary_bar_chart(summary_path: Path, output_path: Path) -> Path | None
     return output_path
 
 
+def save_visual_summary_bar_chart(summary_path: Path, output_path: Path) -> Path | None:
+    if not summary_path.is_file():
+        return None
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    metric_names = [
+        "visual_completeness_score",
+        "surface_alignment_score",
+        "detail_preservation_score",
+        "structure_occupancy_score",
+        "empty_space_score",
+        "density_uniformity_score",
+        "empty_space_violation",
+        "clump_ratio",
+    ]
+    metrics = {
+        name: float(summary[name])
+        for name in metric_names
+        if name in summary and isinstance(summary[name], (int, float))
+    }
+    if not metrics:
+        return None
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(9, 4.8))
+    plt.bar(metrics.keys(), metrics.values(), color="#2f6f5e")
+    plt.title("Test visual diagnostic metrics")
+    plt.ylabel("Metric value")
+    plt.xticks(rotation=25, ha="right")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close()
+    return output_path
+
+
 def save_post_training_metric_charts(metric_dir: Path, artifact_dir: Path) -> dict[str, Path | None]:
     return {
         "test_batch_metrics_chart": save_metric_line_chart(
@@ -821,9 +860,29 @@ def save_post_training_metric_charts(metric_dir: Path, artifact_dir: Path) -> di
             metric_columns=["chamfer_distance", "f_score", "precision", "recall"],
             title="Test batch metrics",
         ),
+        "test_visual_batch_metrics_chart": save_metric_line_chart(
+            metric_dir / "test_batch_metrics.csv",
+            artifact_dir / "test_visual_batch_metrics.png",
+            x_column="batch",
+            metric_columns=[
+                "visual_completeness_score",
+                "surface_alignment_score",
+                "detail_preservation_score",
+                "structure_occupancy_score",
+                "empty_space_score",
+                "density_uniformity_score",
+                "empty_space_violation",
+                "clump_ratio",
+            ],
+            title="Test visual diagnostic metrics by batch",
+        ),
         "test_summary_metrics_chart": save_summary_bar_chart(
             metric_dir / "test_summary.json",
             artifact_dir / "test_summary_metrics.png",
+        ),
+        "test_visual_summary_metrics_chart": save_visual_summary_bar_chart(
+            metric_dir / "test_summary.json",
+            artifact_dir / "test_visual_summary_metrics.png",
         ),
     }
 
@@ -1492,8 +1551,14 @@ def run_training(args):
         "test_batch_metrics_chart_path": str(post_outputs.get("test_batch_metrics_chart"))
         if post_outputs.get("test_batch_metrics_chart")
         else None,
+        "test_visual_batch_metrics_chart_path": str(post_outputs.get("test_visual_batch_metrics_chart"))
+        if post_outputs.get("test_visual_batch_metrics_chart")
+        else None,
         "test_summary_metrics_chart_path": str(post_outputs.get("test_summary_metrics_chart"))
         if post_outputs.get("test_summary_metrics_chart")
+        else None,
+        "test_visual_summary_metrics_chart_path": str(post_outputs.get("test_visual_summary_metrics_chart"))
+        if post_outputs.get("test_visual_summary_metrics_chart")
         else None,
         "comparison_dir": str(post_outputs.get("comparison_dir")) if post_outputs.get("comparison_dir") else None,
     }
