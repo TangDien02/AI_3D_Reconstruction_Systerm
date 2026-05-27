@@ -62,9 +62,20 @@ def save_pointcloud(
             point_count_matches = False
 
         if point_count_matches:
-            if not metadata_path.is_file():
+            metadata_matches = True
+            if metadata_path.is_file():
+                try:
+                    current_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    metadata_matches = (
+                        str(current_metadata.get("source_mesh", "")).replace("\\", "/")
+                        == expected_metadata["source_mesh"].replace("\\", "/")
+                    )
+                except Exception:
+                    metadata_matches = False
+            else:
                 metadata_path.write_text(json.dumps(expected_metadata, indent=2), encoding="utf-8")
-            return output_path
+            if metadata_matches:
+                return output_path
 
         print(
             f"Regenerating incompatible point cloud artifact: {output_path}",

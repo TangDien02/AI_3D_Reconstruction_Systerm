@@ -50,6 +50,7 @@ class Pix3DDataset(Dataset):
         num_points=2048,
         max_samples=None,
         transform=None,
+        use_mask_channel: bool = False,
     ):
         self.root_dir = Path(root_dir)
         self.categories = set(categories) if categories else None
@@ -57,6 +58,7 @@ class Pix3DDataset(Dataset):
         self.image_size = image_size
         self.num_points = num_points
         self.transform = transform
+        self.use_mask_channel = bool(use_mask_channel)
 
         with open(self.root_dir / "pix3d.json", "r", encoding="utf-8") as f:
             self.items = json.load(f)
@@ -93,6 +95,10 @@ class Pix3DDataset(Dataset):
         if self.transform:
             image_tensor = self.transform(image_tensor)
 
+        if self.use_mask_channel:
+            mask_tensor = self._mask_to_tensor(mask.resize((self.image_size, self.image_size)))
+            image_tensor = torch.cat([image_tensor, mask_tensor], dim=0)
+
         points_gt = load_and_sample_obj(str(model_path), num_points=self.num_points)
 
         return {
@@ -123,6 +129,11 @@ class Pix3DDataset(Dataset):
         arr = np.asarray(image).astype(np.float32) / 255.0
         arr = np.transpose(arr, (2, 0, 1))
         return torch.from_numpy(arr)
+
+    @staticmethod
+    def _mask_to_tensor(mask: Image.Image) -> torch.Tensor:
+        arr = (np.asarray(mask).astype(np.float32) > 0).astype(np.float32)
+        return torch.from_numpy(arr).unsqueeze(0)
 
 def _resolve_existing_flags(
     items: pd.DataFrame,
@@ -178,12 +189,17 @@ class ProcessedPix3DDataset(Dataset):
         require_files=True,
         allow_missing_files=False,
         expected_num_points: int | None = None,
+        use_mask_channel: bool = False,
+        exclude_truncated: bool = False,
+        exclude_occluded: bool = False,
+        exclude_slightly_occluded: bool = False,
     ):
         self.processed_dir = Path(processed_dir)
         self.split = split
         self.categories = set(categories) if categories else None
         self.transform = transform
         self.expected_num_points = expected_num_points
+        self.use_mask_channel = bool(use_mask_channel)
 
         split_path = self.processed_dir / "splits" / f"{split}.csv"
         if not split_path.is_file():
@@ -191,9 +207,21 @@ class ProcessedPix3DDataset(Dataset):
 
         items = pd.read_csv(split_path)
         original_count = len(items)
+        if "cad_uid" not in items.columns and "model" in items.columns:
+            items["cad_uid"] = items["model"].apply(
+                lambda path: Path(str(path).replace("\\", "/").strip()).parent.as_posix()
+            )
 
         if self.categories:
             items = items[items["category"].isin(self.categories)].copy()
+
+        for column, enabled in (
+            ("truncated", exclude_truncated),
+            ("occluded", exclude_occluded),
+            ("slightly_occluded", exclude_slightly_occluded),
+        ):
+            if enabled and column in items.columns:
+                items = items[~items[column].fillna(False).astype(bool)].copy()
 
         after_category_count = len(items)
 
@@ -275,6 +303,7 @@ class ProcessedPix3DDataset(Dataset):
         item = self.items.iloc[idx]
 
         image_path = self.processed_dir / str(item["processed_image"])
+        mask_path = self.processed_dir / str(item["processed_mask"])
         pointcloud_path = self.processed_dir / str(item["pointcloud"])
 
         image = Pix3DDataset._load_image_safely(image_path, mode="RGB")
@@ -282,6 +311,11 @@ class ProcessedPix3DDataset(Dataset):
 
         if self.transform:
             image_tensor = self.transform(image_tensor)
+
+        if self.use_mask_channel:
+            mask = Pix3DDataset._load_image_safely(mask_path, mode="L")
+            mask_tensor = Pix3DDataset._mask_to_tensor(mask)
+            image_tensor = torch.cat([image_tensor, mask_tensor], dim=0)
 
         points_np = np.load(pointcloud_path).astype(np.float32)
         if points_np.ndim != 2 or points_np.shape[1] != 3:
@@ -304,6 +338,8 @@ class ProcessedPix3DDataset(Dataset):
             sample["sample_id"] = str(item["sample_id"])
         if "model_uid" in item:
             sample["model_uid"] = str(item["model_uid"])
+        if "cad_uid" in item:
+            sample["cad_uid"] = str(item["cad_uid"])
         if "model" in item:
             sample["model_path"] = str(item["model"])
 

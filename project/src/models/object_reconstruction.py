@@ -30,11 +30,11 @@ class GradientReversalLayer(nn.Module):
 class ConvFeatureEncoder(nn.Module):
     """Small fallback encoder used when torchvision pretrained backbones are unavailable."""
 
-    def __init__(self, feature_dim: int = 256):
+    def __init__(self, feature_dim: int = 256, input_channels: int = 3):
         super().__init__()
         self.feature_dim = feature_dim
         self.net = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
+            nn.Conv2d(input_channels, 32, kernel_size=5, stride=2, padding=2),
             nn.BatchNorm2d(32),
             nn.GELU(),
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
@@ -62,6 +62,7 @@ class TorchvisionResNetEncoder(nn.Module):
         pretrained: bool = True,
         feature_dim: int = 512,
         normalize_input: bool | None = None,
+        input_channels: int = 3,
     ):
         super().__init__()
         try:
@@ -79,11 +80,14 @@ class TorchvisionResNetEncoder(nn.Module):
         except TypeError:
             backbone = builder(pretrained=pretrained)
         in_features = backbone.fc.in_features
+        if input_channels != 3:
+            backbone.conv1 = self._adapt_first_conv(backbone.conv1, input_channels)
         backbone.fc = nn.Identity()
         self.backbone = backbone
         self.projection = nn.Identity() if in_features == feature_dim else nn.Linear(in_features, feature_dim)
         self.feature_dim = feature_dim
         self.normalize_input = pretrained if normalize_input is None else normalize_input
+        self.input_channels = int(input_channels)
         self.register_buffer(
             "image_mean",
             torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1),
@@ -97,9 +101,29 @@ class TorchvisionResNetEncoder(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         if self.normalize_input:
-            images = (images - self.image_mean) / self.image_std
+            images = images.clone()
+            images[:, :3] = (images[:, :3] - self.image_mean) / self.image_std
         features = self.backbone(images)
         return self.projection(features)
+
+    @staticmethod
+    def _adapt_first_conv(conv: nn.Conv2d, input_channels: int) -> nn.Conv2d:
+        adapted = nn.Conv2d(
+            input_channels,
+            conv.out_channels,
+            kernel_size=conv.kernel_size,
+            stride=conv.stride,
+            padding=conv.padding,
+            bias=conv.bias is not None,
+        )
+        with torch.no_grad():
+            adapted.weight[:, :3].copy_(conv.weight)
+            if input_channels > 3:
+                mean_weight = conv.weight.mean(dim=1, keepdim=True)
+                adapted.weight[:, 3:].copy_(mean_weight.repeat(1, input_channels - 3, 1, 1))
+            if conv.bias is not None:
+                adapted.bias.copy_(conv.bias)
+        return adapted
 
 
 class AdapterBlock(nn.Module):
@@ -310,6 +334,7 @@ def build_object_reconstruction_model(
     feature_dim: int = 256,
     num_points: int = 2048,
     freeze_encoder: bool = True,
+    input_channels: int = 3,
     use_adapter: bool = False,
     use_domain_discriminator: bool = False,
     normalize_input: bool | None = None,
@@ -318,13 +343,14 @@ def build_object_reconstruction_model(
     refine_offset_scale: float = 0.08,
 ) -> ObjectReconstructionNet:
     if encoder_name == "conv":
-        encoder = ConvFeatureEncoder(feature_dim=feature_dim)
+        encoder = ConvFeatureEncoder(feature_dim=feature_dim, input_channels=input_channels)
     elif encoder_name.startswith("resnet"):
         encoder = TorchvisionResNetEncoder(
             name=encoder_name,
             pretrained=pretrained,
             feature_dim=feature_dim,
             normalize_input=normalize_input,
+            input_channels=input_channels,
         )
     else:
         raise ValueError(f"Unsupported encoder_name: {encoder_name}")

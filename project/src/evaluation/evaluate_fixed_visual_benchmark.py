@@ -70,6 +70,7 @@ def evaluate_fixed_visual_benchmark(args: argparse.Namespace) -> dict:
         categories=categories,
         max_samples=None,
         expected_num_points=int(checkpoint.get("num_points", 2048)),
+        use_mask_channel=bool(checkpoint.get("use_mask_channel", False)),
     )
 
     output_rows: list[dict[str, object]] = []
@@ -124,6 +125,7 @@ def evaluate_fixed_visual_benchmark(args: argparse.Namespace) -> dict:
             **manifest_row,
             "image_path": sample["image_path"],
             "pointcloud_path": sample["pointcloud_path"],
+            "cad_uid": sample.get("cad_uid", manifest_row.get("cad_uid")),
             **metrics,
         }
         output_rows.append(output_row)
@@ -146,6 +148,7 @@ def evaluate_fixed_visual_benchmark(args: argparse.Namespace) -> dict:
         "processed_image",
         "pointcloud",
         "model_uid",
+        "cad_uid",
         "reason",
         "image_path",
         "pointcloud_path",

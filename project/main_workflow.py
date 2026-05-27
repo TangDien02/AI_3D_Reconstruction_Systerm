@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--crop-padding", type=float, default=0.10)
     parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
@@ -101,6 +102,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--refine-offset-scale", type=float, default=0.08)
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-mask-channel", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--balance-cad", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--exclude-truncated", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--exclude-occluded", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--exclude-slightly-occluded", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--skip-preprocessing", action="store_true")
     parser.add_argument("--skip-training", action="store_true")
@@ -126,6 +132,8 @@ def parse_args() -> argparse.Namespace:
         args.lr_scheduler_min_lr = 0.0
     if args.chamfer_gt_weight <= 0:
         args.chamfer_gt_weight = 1.0
+    if args.crop_padding < 0:
+        args.crop_padding = 0.0
     if args.repulsion_weight < 0:
         args.repulsion_weight = 0.0
     if args.repulsion_k < 0:
@@ -176,6 +184,7 @@ def run_preprocessing(args: argparse.Namespace) -> dict[str, Path]:
             raw_dir=raw_dir,
             output_dir=processed_dir,
             image_size=args.image_size,
+            crop_padding=args.crop_padding,
             overwrite=args.overwrite,
             max_samples=args.max_samples,
             progress_interval=args.progress_interval,
@@ -216,6 +225,12 @@ def make_training_args(args: argparse.Namespace) -> argparse.Namespace:
         refine_offset_scale=args.refine_offset_scale,
         pretrained=args.pretrained,
         freeze_encoder=args.freeze_encoder,
+        use_mask_channel=args.use_mask_channel,
+        input_channels=4 if args.use_mask_channel else 3,
+        balance_cad=args.balance_cad,
+        exclude_truncated=args.exclude_truncated,
+        exclude_occluded=args.exclude_occluded,
+        exclude_slightly_occluded=args.exclude_slightly_occluded,
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,

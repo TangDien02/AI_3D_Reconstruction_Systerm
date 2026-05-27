@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, WeightedRandomSampler, random_split
 from torchvision import transforms
 
 # Ghi chu:
@@ -291,6 +291,21 @@ def parse_args():
     )
     parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--use-mask-channel",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use processed mask as a fourth input channel. Requires processed datasets with processed_mask.",
+    )
+    parser.add_argument(
+        "--balance-cad",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use an inverse-CAD-frequency sampler to reduce dominant Pix3D product bias.",
+    )
+    parser.add_argument("--exclude-truncated", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--exclude-occluded", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--exclude-slightly-occluded", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -530,6 +545,9 @@ def build_checkpoint(
         "decoder_type": getattr(args, "decoder_type", "mlp"),
         "coarse_points": getattr(args, "coarse_points", 512),
         "refine_offset_scale": getattr(args, "refine_offset_scale", 0.08),
+        "input_channels": getattr(args, "input_channels", 4 if getattr(args, "use_mask_channel", False) else 3),
+        "use_mask_channel": getattr(args, "use_mask_channel", False),
+        "balance_cad": getattr(args, "balance_cad", False),
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
         "encoder_unfrozen": getattr(args, "encoder_unfrozen", None),
@@ -568,6 +586,9 @@ def build_checkpoint(
         "val_split": getattr(args, "val_split", None),
         "max_samples": args.max_samples,
         "val_max_samples": getattr(args, "val_max_samples", None),
+        "exclude_truncated": getattr(args, "exclude_truncated", False),
+        "exclude_occluded": getattr(args, "exclude_occluded", False),
+        "exclude_slightly_occluded": getattr(args, "exclude_slightly_occluded", False),
         "resumed_from_checkpoint": str(resumed_from_checkpoint) if resumed_from_checkpoint else None,
     }
     if optimizer is not None:
@@ -628,7 +649,7 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
     ):
         mismatches.append("model_type: checkpoint appears to be an old Transformer checkpoint")
 
-    for key in ["num_points", "image_size", "feature_dim"]:
+    for key in ["num_points", "image_size", "feature_dim", "input_channels"]:
         if key in checkpoint and int(checkpoint[key]) != int(getattr(args, key)):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
 
@@ -651,7 +672,7 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
                 f"checkpoint={checkpoint['refine_offset_scale']} current={getattr(args, 'refine_offset_scale')}"
             )
 
-    for key in ["encoder_name", "pretrained", "freeze_encoder"]:
+    for key in ["encoder_name", "pretrained", "freeze_encoder", "use_mask_channel"]:
         if key in checkpoint and checkpoint[key] != getattr(args, key):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
 
@@ -673,6 +694,10 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
 def validate_processed_splits(processed_dir: Path, train_split: str, val_split: str) -> dict[str, int]:
     import pandas as pd
 
+    def cad_uid_from_model(path: object) -> str:
+        normalized = str(path).replace("\\", "/").strip()
+        return Path(normalized).parent.as_posix() or normalized
+
     split_dir = processed_dir / "splits"
     split_frames = {}
     required_columns = {"model_uid", "pointcloud", "processed_image", "category"}
@@ -681,33 +706,56 @@ def validate_processed_splits(processed_dir: Path, train_split: str, val_split: 
         if not split_path.is_file():
             continue
         frame = pd.read_csv(split_path)
+        if "cad_uid" not in frame.columns and "model" in frame.columns:
+            frame["cad_uid"] = frame["model"].apply(cad_uid_from_model)
         missing_columns = required_columns - set(frame.columns)
         if missing_columns:
             raise RuntimeError(f"{split_path} is missing required columns: {sorted(missing_columns)}")
+        if "cad_uid" not in frame.columns:
+            raise RuntimeError(
+                f"{split_path} is missing cad_uid and cannot derive it because model column is absent. "
+                "Regenerate processed metadata/splits."
+            )
         split_frames[split_name] = frame
 
     if train_split in split_frames and val_split in split_frames:
-        train_models = set(split_frames[train_split]["model_uid"].astype(str))
-        val_models = set(split_frames[val_split]["model_uid"].astype(str))
-        overlap = train_models & val_models
-        if overlap:
-            examples = ", ".join(sorted(overlap)[:5])
-            raise RuntimeError(f"CAD model leakage between {train_split} and {val_split}: {examples}")
+        for key_name in ("model_uid", "cad_uid"):
+            train_ids = set(split_frames[train_split][key_name].astype(str))
+            val_ids = set(split_frames[val_split][key_name].astype(str))
+            overlap = train_ids & val_ids
+            if overlap:
+                examples = ", ".join(sorted(overlap)[:5])
+                raise RuntimeError(f"{key_name} leakage between {train_split} and {val_split}: {examples}")
 
     if "test" in split_frames:
         for split_name, frame in split_frames.items():
             if split_name == "test":
                 continue
-            overlap = set(frame["model_uid"].astype(str)) & set(split_frames["test"]["model_uid"].astype(str))
-            if overlap:
-                examples = ", ".join(sorted(overlap)[:5])
-                raise RuntimeError(f"CAD model leakage between {split_name} and test: {examples}")
+            for key_name in ("model_uid", "cad_uid"):
+                overlap = set(frame[key_name].astype(str)) & set(split_frames["test"][key_name].astype(str))
+                if overlap:
+                    examples = ", ".join(sorted(overlap)[:5])
+                    raise RuntimeError(f"{key_name} leakage between {split_name} and test: {examples}")
 
     counts = {}
     for split_name, frame in split_frames.items():
         counts[f"{split_name}_samples"] = len(frame)
+        counts[f"{split_name}_cad_folders"] = frame["cad_uid"].nunique()
         counts[f"{split_name}_models"] = frame["model_uid"].nunique()
     return counts
+
+
+def build_cad_balanced_sampler(dataset: ProcessedPix3DDataset) -> WeightedRandomSampler:
+    if not hasattr(dataset, "items") or "cad_uid" not in dataset.items.columns:
+        raise RuntimeError("CAD-balanced sampling requires ProcessedPix3DDataset items with cad_uid.")
+    cad_counts = dataset.items["cad_uid"].astype(str).value_counts()
+    weights = dataset.items["cad_uid"].astype(str).map(lambda value: 1.0 / float(cad_counts[value]))
+    weights_tensor = torch.as_tensor(weights.to_numpy(), dtype=torch.double)
+    return WeightedRandomSampler(
+        weights=weights_tensor,
+        num_samples=len(weights_tensor),
+        replacement=True,
+    )
 
 
 def move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
@@ -1074,6 +1122,18 @@ def run_training(args):
         args.pretrained = True
     if not hasattr(args, "freeze_encoder"):
         args.freeze_encoder = True
+    if not hasattr(args, "use_mask_channel"):
+        args.use_mask_channel = False
+    if not hasattr(args, "input_channels"):
+        args.input_channels = 4 if args.use_mask_channel else 3
+    if not hasattr(args, "balance_cad"):
+        args.balance_cad = False
+    if not hasattr(args, "exclude_truncated"):
+        args.exclude_truncated = False
+    if not hasattr(args, "exclude_occluded"):
+        args.exclude_occluded = False
+    if not hasattr(args, "exclude_slightly_occluded"):
+        args.exclude_slightly_occluded = False
     if not hasattr(args, "decoder_type"):
         args.decoder_type = "mlp"
     if not hasattr(args, "coarse_points"):
@@ -1201,16 +1261,21 @@ def run_training(args):
             erasing_scale_max = min(1.0, max(0.02, float(args.augment_erasing_scale)))
             transform_steps = [
                 transforms.ToPILImage(),
-                transforms.RandomHorizontalFlip(),
-                transforms.ColorJitter(
-                    brightness=max(0.0, float(args.augment_brightness)),
-                    contrast=max(0.0, float(args.augment_contrast)),
-                    saturation=0.2,
-                ),
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
-                transforms.ToTensor(),
-                AddGaussianNoise(std=float(args.augment_noise_std)),
             ]
+            if not args.use_mask_channel:
+                transform_steps.append(transforms.RandomHorizontalFlip())
+            transform_steps.extend(
+                [
+                    transforms.ColorJitter(
+                        brightness=max(0.0, float(args.augment_brightness)),
+                        contrast=max(0.0, float(args.augment_contrast)),
+                        saturation=0.2,
+                    ),
+                    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
+                    transforms.ToTensor(),
+                    AddGaussianNoise(std=float(args.augment_noise_std)),
+                ]
+            )
             if float(args.augment_erasing_prob) > 0:
                 transform_steps.append(
                     transforms.RandomErasing(
@@ -1220,12 +1285,13 @@ def run_training(args):
                 )
             train_transform = transforms.Compose(transform_steps)
             logger.info(
-                "Train augmentation enabled: brightness=%s contrast=%s noise_std=%s erasing_prob=%s erasing_scale_max=%s",
+                "Train augmentation enabled: brightness=%s contrast=%s noise_std=%s erasing_prob=%s erasing_scale_max=%s horizontal_flip=%s",
                 args.augment_brightness,
                 args.augment_contrast,
                 args.augment_noise_std,
                 args.augment_erasing_prob,
                 erasing_scale_max,
+                not args.use_mask_channel,
             )
         else:
             logger.info("Train augmentation disabled.")
@@ -1237,6 +1303,10 @@ def run_training(args):
             max_samples=args.max_samples,
             expected_num_points=args.num_points,
             transform=train_transform,
+            use_mask_channel=args.use_mask_channel,
+            exclude_truncated=args.exclude_truncated,
+            exclude_occluded=args.exclude_occluded,
+            exclude_slightly_occluded=args.exclude_slightly_occluded,
         )
         validation_max_samples = args.val_max_samples
         if validation_max_samples is None:
@@ -1248,6 +1318,7 @@ def run_training(args):
             categories=args.categories,
             max_samples=validation_max_samples,
             expected_num_points=args.num_points,
+            use_mask_channel=args.use_mask_channel,
         )
     else:
         dataset = Pix3DDataset(
@@ -1256,6 +1327,7 @@ def run_training(args):
             image_size=args.image_size,
             num_points=args.num_points,
             max_samples=args.max_samples,
+            use_mask_channel=args.use_mask_channel,
         )
 
         if len(dataset) < 2:
@@ -1289,7 +1361,19 @@ def run_training(args):
         val_size,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    train_sampler = None
+    train_shuffle = True
+    if args.dataset_mode == "processed" and args.balance_cad:
+        train_sampler = build_cad_balanced_sampler(train_dataset)
+        train_shuffle = False
+        logger.info("CAD-balanced sampler enabled for train split.")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=train_shuffle,
+        sampler=train_sampler,
+    )
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     logger.info("Train samples: %s | Val samples: %s", train_size, val_size)
     if args.max_samples is not None or getattr(args, "val_max_samples", None) is not None:
@@ -1305,18 +1389,20 @@ def run_training(args):
         feature_dim=args.feature_dim,
         num_points=args.num_points,
         freeze_encoder=args.freeze_encoder,
+        input_channels=args.input_channels,
         decoder_type=args.decoder_type,
         coarse_points=args.coarse_points,
         refine_offset_scale=args.refine_offset_scale,
     ).to(device)
     logger.info(
-        "Model ready: resnet_pointcloud encoder=%s decoder=%s coarse_points=%s refine_offset_scale=%s pretrained=%s freeze_encoder=%s feature_dim=%s num_points=%s trainable_params=%s",
+        "Model ready: resnet_pointcloud encoder=%s decoder=%s coarse_points=%s refine_offset_scale=%s pretrained=%s freeze_encoder=%s input_channels=%s feature_dim=%s num_points=%s trainable_params=%s",
         args.encoder_name,
         args.decoder_type,
         args.coarse_points,
         args.refine_offset_scale,
         args.pretrained,
         args.freeze_encoder,
+        args.input_channels,
         args.feature_dim,
         args.num_points,
         model.trainable_parameter_count(),
@@ -1628,6 +1714,9 @@ def run_training(args):
         "decoder_type": args.decoder_type,
         "coarse_points": args.coarse_points,
         "refine_offset_scale": args.refine_offset_scale,
+        "input_channels": args.input_channels,
+        "use_mask_channel": args.use_mask_channel,
+        "balance_cad": args.balance_cad,
         "feature_dim": args.feature_dim,
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
@@ -1655,6 +1744,9 @@ def run_training(args):
         "detail_coverage_exponent": args.detail_coverage_exponent,
         "uniformity_weight": args.uniformity_weight,
         "uniformity_sample_size": args.uniformity_sample_size,
+        "exclude_truncated": args.exclude_truncated,
+        "exclude_occluded": args.exclude_occluded,
+        "exclude_slightly_occluded": args.exclude_slightly_occluded,
         "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,

@@ -42,6 +42,12 @@ def _stable_model_uid(model_rel_path: str) -> str:
     return f"{model_stem}_{path_hash}"
 
 
+def _stable_cad_uid(model_rel_path: str) -> str:
+    normalized_path = str(model_rel_path).replace("\\", "/").strip()
+    cad_folder = Path(normalized_path).parent.as_posix()
+    return cad_folder or normalized_path
+
+
 def _relative_point_path(row: pd.Series) -> str:
     model_uid = str(row["model_uid"])
     return str(Path("points") / str(row["category"]) / f"{model_uid}.npy").replace("\\", "/")
@@ -93,6 +99,7 @@ def clean_pix3d_metadata(raw_dir: str | Path, categories: Iterable[str] | None =
     clean_data = clean_data.reset_index(drop=True)
     clean_data.insert(0, "sample_id", clean_data.index.map(lambda idx: f"pix3d_{idx:05d}"))
     clean_data["model_uid"] = clean_data["model"].apply(_stable_model_uid)
+    clean_data["cad_uid"] = clean_data["model"].apply(_stable_cad_uid)
     clean_data["processed_image"] = clean_data.apply(_relative_processed_image_path, axis=1)
     clean_data["processed_mask"] = clean_data.apply(_relative_processed_mask_path, axis=1)
     clean_data["pointcloud"] = clean_data.apply(_relative_point_path, axis=1)
@@ -106,8 +113,9 @@ def make_stratified_splits(
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
     seed: int = 42,
+    split_key: str = "cad_uid",
 ) -> dict[str, pd.DataFrame]:
-    required_cols = {"category", "model_uid"}
+    required_cols = {"category", split_key}
     missing_cols = required_cols - set(metadata.columns)
 
     if missing_cols:
@@ -123,42 +131,42 @@ def make_stratified_splits(
     test_parts = []
 
     for category, group in metadata.groupby("category", sort=False):
-        unique_models = (
-            group[["model_uid"]]
+        unique_cads = (
+            group[[split_key]]
             .drop_duplicates()
             .sample(frac=1, random_state=seed)
             .reset_index(drop=True)
         )
 
-        n_models = len(unique_models)
+        n_cads = len(unique_cads)
 
-        if n_models == 0:
+        if n_cads == 0:
             continue
 
-        if n_models == 1:
-            train_model_ids = set(unique_models["model_uid"])
-            val_model_ids = set()
-            test_model_ids = set()
+        if n_cads == 1:
+            train_cad_ids = set(unique_cads[split_key])
+            val_cad_ids = set()
+            test_cad_ids = set()
 
-        elif n_models == 2:
-            train_model_ids = set(unique_models.iloc[:1]["model_uid"])
-            val_model_ids = set()
-            test_model_ids = set(unique_models.iloc[1:]["model_uid"])
+        elif n_cads == 2:
+            train_cad_ids = set(unique_cads.iloc[:1][split_key])
+            val_cad_ids = set()
+            test_cad_ids = set(unique_cads.iloc[1:][split_key])
 
         else:
-            train_end = int(n_models * train_ratio)
-            val_end = train_end + int(n_models * val_ratio)
+            train_end = int(n_cads * train_ratio)
+            val_end = train_end + int(n_cads * val_ratio)
 
-            train_end = max(1, min(train_end, n_models - 2))
-            val_end = max(train_end + 1, min(val_end, n_models - 1))
+            train_end = max(1, min(train_end, n_cads - 2))
+            val_end = max(train_end + 1, min(val_end, n_cads - 1))
 
-            train_model_ids = set(unique_models.iloc[:train_end]["model_uid"])
-            val_model_ids = set(unique_models.iloc[train_end:val_end]["model_uid"])
-            test_model_ids = set(unique_models.iloc[val_end:]["model_uid"])
+            train_cad_ids = set(unique_cads.iloc[:train_end][split_key])
+            val_cad_ids = set(unique_cads.iloc[train_end:val_end][split_key])
+            test_cad_ids = set(unique_cads.iloc[val_end:][split_key])
 
-        train_parts.append(group[group["model_uid"].isin(train_model_ids)])
-        val_parts.append(group[group["model_uid"].isin(val_model_ids)])
-        test_parts.append(group[group["model_uid"].isin(test_model_ids)])
+        train_parts.append(group[group[split_key].isin(train_cad_ids)])
+        val_parts.append(group[group[split_key].isin(val_cad_ids)])
+        test_parts.append(group[group[split_key].isin(test_cad_ids)])
 
     def _concat_or_empty(parts: list[pd.DataFrame]) -> pd.DataFrame:
         valid_parts = [part for part in parts if len(part) > 0]
@@ -185,6 +193,7 @@ def save_metadata_and_splits(
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
     seed: int = 42,
+    split_key: str = "cad_uid",
 ) -> dict[str, Path]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -196,7 +205,13 @@ def save_metadata_and_splits(
     split_dir.mkdir(parents=True, exist_ok=True)
 
     paths = {"metadata": metadata_path}
-    for split_name, split_data in make_stratified_splits(metadata, train_ratio, val_ratio, seed).items():
+    for split_name, split_data in make_stratified_splits(
+        metadata,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        seed=seed,
+        split_key=split_key,
+    ).items():
         split_path = split_dir / f"{split_name}.csv"
         _safe_to_csv(split_data, split_path)
         paths[split_name] = split_path
@@ -237,6 +252,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split-key", choices=["cad_uid", "model_uid"], default="cad_uid")
     return parser.parse_args()
 
 
@@ -249,6 +265,7 @@ def main() -> None:
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
+        split_key=args.split_key,
     )
 
     print(f"Clean samples: {len(metadata)}")

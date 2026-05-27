@@ -11,15 +11,23 @@ import pandas as pd
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
+def cad_uid_from_model(path: object) -> str:
+    normalized = str(path).replace("\\", "/").strip()
+    return Path(normalized).parent.as_posix() or normalized
+
+
 def load_csv(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(f"Missing CSV: {path}")
-    return pd.read_csv(path)
+    frame = pd.read_csv(path)
+    if "cad_uid" not in frame.columns and "model" in frame.columns:
+        frame["cad_uid"] = frame["model"].apply(cad_uid_from_model)
+    return frame
 
 
 def check_metadata(metadata: pd.DataFrame) -> list[str]:
     errors: list[str] = []
-    required_columns = {"model", "model_uid", "pointcloud", "processed_image", "category"}
+    required_columns = {"model", "model_uid", "cad_uid", "pointcloud", "processed_image", "category"}
     missing_columns = required_columns - set(metadata.columns)
     if missing_columns:
         return [f"metadata missing columns: {sorted(missing_columns)}"]
@@ -41,17 +49,29 @@ def check_split_leakage(split_dir: Path) -> list[str]:
     for name, frame in frames.items():
         if "model_uid" not in frame.columns:
             errors.append(f"{name}.csv missing model_uid")
+        if "cad_uid" not in frame.columns:
+            errors.append(f"{name}.csv missing cad_uid")
 
     if errors:
         return errors
 
-    for left_name, right_name in (("train", "val"), ("train", "test"), ("val", "test")):
-        left = set(frames[left_name]["model_uid"].astype(str))
-        right = set(frames[right_name]["model_uid"].astype(str))
-        overlap = sorted(left & right)
-        if overlap:
-            errors.append(f"CAD leakage {left_name}-{right_name}: {', '.join(overlap[:5])}")
+    for key_name in ("model_uid", "cad_uid"):
+        for left_name, right_name in (("train", "val"), ("train", "test"), ("val", "test")):
+            left = set(frames[left_name][key_name].astype(str))
+            right = set(frames[right_name][key_name].astype(str))
+            overlap = sorted(left & right)
+            if overlap:
+                errors.append(
+                    f"{key_name} leakage {left_name}-{right_name}: {', '.join(overlap[:5])}"
+                )
     return errors
+
+
+def add_split_counts(metadata: pd.DataFrame) -> None:
+    print(f"Metadata rows: {len(metadata)}")
+    print(f"CAD folders: {metadata['cad_uid'].nunique() if 'cad_uid' in metadata else 'n/a'}")
+    print(f"CAD models: {metadata['model_uid'].nunique() if 'model_uid' in metadata else 'n/a'}")
+    print(f"Pointcloud paths: {metadata['pointcloud'].nunique() if 'pointcloud' in metadata else 'n/a'}")
 
 
 def check_artifacts(processed_dir: Path, metadata: pd.DataFrame, num_points: int | None) -> list[str]:
@@ -102,9 +122,7 @@ def main() -> None:
     if not args.skip_artifacts:
         errors.extend(check_artifacts(processed_dir, metadata, args.num_points))
 
-    print(f"Metadata rows: {len(metadata)}")
-    print(f"CAD models: {metadata['model_uid'].nunique() if 'model_uid' in metadata else 'n/a'}")
-    print(f"Pointcloud paths: {metadata['pointcloud'].nunique() if 'pointcloud' in metadata else 'n/a'}")
+    add_split_counts(metadata)
 
     if errors:
         print("AUDIT FAILED")
@@ -115,7 +133,7 @@ def main() -> None:
             print(f"... {remaining} more errors")
         sys.exit(1)
 
-    print("AUDIT OK: no pointcloud collisions, no CAD leakage, artifacts match expected shape.")
+    print("AUDIT OK: no pointcloud collisions, no model/cad leakage, artifacts match expected shape.")
 
 
 if __name__ == "__main__":

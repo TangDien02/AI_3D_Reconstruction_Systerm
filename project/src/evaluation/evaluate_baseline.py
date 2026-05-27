@@ -34,6 +34,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
         categories=args.categories or checkpoint.get("categories"),
         max_samples=args.max_samples,
         expected_num_points=int(checkpoint.get("num_points", 2048)),
+        use_mask_channel=bool(checkpoint.get("use_mask_channel", False)),
     )
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
