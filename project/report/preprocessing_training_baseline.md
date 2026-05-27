@@ -476,6 +476,44 @@ python -m src.training.training_pipeline --dataset-mode processed --processed-di
 
 Run nay se duoc so sanh voi visual baseline v2 bang fixed benchmark 10 sample.
 
+### 8.7 Pix3D-native input pipeline va clean sample filtering
+
+Van de quan sat sau cac run visual la mot so mau predict bi lech/lac so voi ground truth. Nguyen nhan khong chi nam o loss hay decoder, ma nam o input/target cua Pix3D:
+
+- Anh dau vao chi la mot view 2D, trong khi target la CAD point cloud normalized.
+- Mot so sample co metadata `truncated` hoac `occluded`, anh dau vao bi mat thong tin nhung GT van la vat the day du.
+- `processed_image` trong preprocessing hien da crop va apply mask voi nen trang, nhung training truoc do chua co flag ro rang de kiem soat input mask/background va chua luu cau hinh input vao checkpoint.
+
+Da bo sung vao `ProcessedPix3DDataset`:
+
+```text
+input_mode=rgb | masked_rgb
+mask_background=white | black
+exclude_truncated=True/False
+exclude_occluded=True/False
+exclude_slightly_occluded=True/False
+```
+
+Y nghia:
+
+- `input_mode=rgb`: dung anh processed nhu da luu tren disk. Voi processed dataset hien tai, day la anh da apply mask nen trang.
+- `input_mode=masked_rgb`: doc lai `processed_mask` va apply mask luc load sample. Neu `mask_background=black`, model nhin silhouette/object tren nen den, tach manh hon voi background.
+- `exclude_truncated`, `exclude_occluded`: loai sample co dau vao khong du thong tin khoi train/val/eval processed split.
+
+Training pipeline cung da luu cac truong nay vao checkpoint va validate khi resume, de tranh vo tinh resume mot checkpoint train bang input distribution khac.
+
+Lenh train moc so sanh moi:
+
+```powershell
+python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 40 --batch-size 16 --encoder-name resnet50 --feature-dim 2048 --decoder-type refine_mlp --coarse-points 512 --refine-offset-scale 0.08 --num-points 2048 --input-mode masked_rgb --mask-background black --exclude-truncated --exclude-occluded --output-dir results/visual_masked_clean_refine_mlp_chair --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.005 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512 --eval-max-samples 128 --comparison-index 0
+```
+
+Ky vong cua run nay:
+
+- Khong nhat thiet tang moi metric tren full test, vi train set da bi loc nho lai.
+- Neu huong nay dung, fixed visual benchmark se giam cac case predict lech do model hoc tu sample bi truncated/occluded.
+- Can so sanh voi visual baseline v2 tren cung fixed benchmark 10 sample truoc khi chot lam default.
+
 ## 9. Trang thai hien tai va viec nen lam tiep
 
 Da hoan thanh:
@@ -495,6 +533,7 @@ Can cai thien tiep:
 - Chay `evaluate_baseline.py` tren `test.csv` sau khi cai du `torch`.
 - Mo rong backend inference tu anh don sang video/scan 360 neu can demo end-to-end.
 - Chuyen giao dien sang dung endpoint `/reconstruct-image` sau khi backend ky thuat on dinh.
+- So sanh input clean/masked run voi visual baseline v2 bang fixed benchmark 10 sample.
 
 ## 10. Lenh ky thuat rut gon
 

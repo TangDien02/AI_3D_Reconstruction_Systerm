@@ -28,12 +28,19 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
 
     device = select_device(getattr(args, "device", "auto"))
     model, checkpoint = load_baseline_model(checkpoint_path, device=device)
+    input_mode = getattr(args, "input_mode", None) or checkpoint.get("input_mode", "rgb")
+    mask_background = getattr(args, "mask_background", None) or checkpoint.get("mask_background", "white")
     dataset = ProcessedPix3DDataset(
         processed_dir=processed_dir,
         split=args.split,
         categories=args.categories or checkpoint.get("categories"),
         max_samples=args.max_samples,
         expected_num_points=int(checkpoint.get("num_points", 2048)),
+        input_mode=input_mode,
+        mask_background=mask_background,
+        exclude_truncated=bool(getattr(args, "exclude_truncated", False)),
+        exclude_occluded=bool(getattr(args, "exclude_occluded", False)),
+        exclude_slightly_occluded=bool(getattr(args, "exclude_slightly_occluded", False)),
     )
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 
@@ -94,6 +101,11 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
         "samples": sample_count,
         "batch_size": args.batch_size,
         "checkpoint_path": str(checkpoint_path),
+        "input_mode": input_mode,
+        "mask_background": mask_background,
+        "exclude_truncated": bool(getattr(args, "exclude_truncated", False)),
+        "exclude_occluded": bool(getattr(args, "exclude_occluded", False)),
+        "exclude_slightly_occluded": bool(getattr(args, "exclude_slightly_occluded", False)),
         **{metric_name: metric_totals[metric_name] / sample_count for metric_name in ALL_POINTCLOUD_METRICS},
         "batch_metrics_path": str(batch_metrics_path),
         "visual_diagnostics": {
@@ -129,6 +141,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--input-mode", choices=["rgb", "masked_rgb"], default=None)
+    parser.add_argument("--mask-background", choices=["white", "black"], default=None)
+    parser.add_argument("--exclude-truncated", action="store_true")
+    parser.add_argument("--exclude-occluded", action="store_true")
+    parser.add_argument("--exclude-slightly-occluded", action="store_true")
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--fine-threshold", type=float, default=None)
     parser.add_argument("--loose-threshold", type=float, default=None)

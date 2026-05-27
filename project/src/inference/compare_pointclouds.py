@@ -108,6 +108,8 @@ def compare_sample(args: argparse.Namespace) -> None:
     categories = args.categories
     if categories is None:
         categories = checkpoint.get("categories")
+    input_mode = getattr(args, "input_mode", None) or checkpoint.get("input_mode", "rgb")
+    mask_background = getattr(args, "mask_background", None) or checkpoint.get("mask_background", "white")
 
     dataset = ProcessedPix3DDataset(
         processed_dir=processed_dir,
@@ -115,6 +117,11 @@ def compare_sample(args: argparse.Namespace) -> None:
         categories=categories,
         max_samples=args.max_samples,
         expected_num_points=int(checkpoint.get("num_points", 2048)),
+        input_mode=input_mode,
+        mask_background=mask_background,
+        exclude_truncated=bool(getattr(args, "exclude_truncated", False)),
+        exclude_occluded=bool(getattr(args, "exclude_occluded", False)),
+        exclude_slightly_occluded=bool(getattr(args, "exclude_slightly_occluded", False)),
     )
     if len(dataset) == 0:
         raise RuntimeError(
@@ -165,6 +172,7 @@ def compare_sample(args: argparse.Namespace) -> None:
     print(f"Device: {device}")
     print(f"Sample: {sample_id}")
     print(f"Category: {sample['category']}")
+    print(f"Input mode: {input_mode} mask_background={mask_background}")
     print(f"Image: {sample['image_path']}")
     print(f"GT pointcloud: {sample['pointcloud_path']}")
     print(f"Pred shape: {pred_np.shape}")
@@ -203,6 +211,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", nargs="+", default=None)
     parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--input-mode", choices=["rgb", "masked_rgb"], default=None)
+    parser.add_argument("--mask-background", choices=["white", "black"], default=None)
+    parser.add_argument("--exclude-truncated", action="store_true")
+    parser.add_argument("--exclude-occluded", action="store_true")
+    parser.add_argument("--exclude-slightly-occluded", action="store_true")
     parser.add_argument("--output-dir", default="results/all_categories_resnet50_2048pts_30ep_aug/outputs/comparison")
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--fine-threshold", type=float, default=None)

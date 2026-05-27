@@ -64,12 +64,16 @@ def evaluate_fixed_visual_benchmark(args: argparse.Namespace) -> dict:
 
     device = select_device(args.device)
     model, checkpoint = load_baseline_model(checkpoint_path, device=device)
+    input_mode = args.input_mode or checkpoint.get("input_mode", "rgb")
+    mask_background = args.mask_background or checkpoint.get("mask_background", "white")
     dataset = ProcessedPix3DDataset(
         processed_dir=processed_dir,
         split=args.split,
         categories=categories,
         max_samples=None,
         expected_num_points=int(checkpoint.get("num_points", 2048)),
+        input_mode=input_mode,
+        mask_background=mask_background,
     )
 
     output_rows: list[dict[str, object]] = []
@@ -163,6 +167,8 @@ def evaluate_fixed_visual_benchmark(args: argparse.Namespace) -> dict:
         "manifest_path": str(manifest_path),
         "processed_dir": str(processed_dir),
         "checkpoint_path": str(checkpoint_path),
+        "input_mode": input_mode,
+        "mask_background": mask_background,
         "metrics_path": str(csv_path),
         "comparison_dir": str(comparison_dir) if not args.skip_comparison else None,
         "visual_diagnostics": {
@@ -191,6 +197,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default="results/fixed_visual_benchmark")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
+    parser.add_argument("--input-mode", choices=["rgb", "masked_rgb"], default=None)
+    parser.add_argument("--mask-background", choices=["white", "black"], default=None)
     parser.add_argument("--f-threshold", type=float, default=0.05)
     parser.add_argument("--fine-threshold", type=float, default=None)
     parser.add_argument("--loose-threshold", type=float, default=None)

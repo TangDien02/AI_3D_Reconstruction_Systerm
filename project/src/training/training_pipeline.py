@@ -272,6 +272,36 @@ def parse_args():
     parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
     parser.add_argument("--feature-dim", type=int, default=512)
     parser.add_argument(
+        "--input-mode",
+        choices=["rgb", "masked_rgb"],
+        default="rgb",
+        help=(
+            "Processed image input mode. rgb uses processed_image as stored; masked_rgb reapplies "
+            "processed_mask with --mask-background before augmentation."
+        ),
+    )
+    parser.add_argument(
+        "--mask-background",
+        choices=["white", "black"],
+        default="white",
+        help="Background fill for --input-mode masked_rgb.",
+    )
+    parser.add_argument(
+        "--exclude-truncated",
+        action="store_true",
+        help="Drop Pix3D samples marked truncated from processed train/val/eval datasets.",
+    )
+    parser.add_argument(
+        "--exclude-occluded",
+        action="store_true",
+        help="Drop Pix3D samples marked occluded from processed train/val/eval datasets.",
+    )
+    parser.add_argument(
+        "--exclude-slightly-occluded",
+        action="store_true",
+        help="Drop Pix3D samples marked slightly_occluded from processed train/val/eval datasets.",
+    )
+    parser.add_argument(
         "--decoder-type",
         choices=["mlp", "refine_mlp"],
         default="mlp",
@@ -530,6 +560,11 @@ def build_checkpoint(
         "decoder_type": getattr(args, "decoder_type", "mlp"),
         "coarse_points": getattr(args, "coarse_points", 512),
         "refine_offset_scale": getattr(args, "refine_offset_scale", 0.08),
+        "input_mode": getattr(args, "input_mode", "rgb"),
+        "mask_background": getattr(args, "mask_background", "white"),
+        "exclude_truncated": bool(getattr(args, "exclude_truncated", False)),
+        "exclude_occluded": bool(getattr(args, "exclude_occluded", False)),
+        "exclude_slightly_occluded": bool(getattr(args, "exclude_slightly_occluded", False)),
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
         "encoder_unfrozen": getattr(args, "encoder_unfrozen", None),
@@ -653,6 +688,14 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
 
     for key in ["encoder_name", "pretrained", "freeze_encoder"]:
         if key in checkpoint and checkpoint[key] != getattr(args, key):
+            mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
+
+    for key in ["input_mode", "mask_background"]:
+        if key in checkpoint and checkpoint[key] != getattr(args, key):
+            mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
+
+    for key in ["exclude_truncated", "exclude_occluded", "exclude_slightly_occluded"]:
+        if key in checkpoint and bool(checkpoint[key]) != bool(getattr(args, key)):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
 
     checkpoint_categories = checkpoint.get("categories")
@@ -999,6 +1042,11 @@ def run_post_training_outputs(
                 max_samples=getattr(args, "eval_max_samples", None),
                 batch_size=args.batch_size,
                 f_threshold=args.f_threshold,
+                input_mode=getattr(args, "input_mode", "rgb"),
+                mask_background=getattr(args, "mask_background", "white"),
+                exclude_truncated=bool(getattr(args, "exclude_truncated", False)),
+                exclude_occluded=bool(getattr(args, "exclude_occluded", False)),
+                exclude_slightly_occluded=bool(getattr(args, "exclude_slightly_occluded", False)),
                 fine_threshold=getattr(args, "fine_threshold", None),
                 loose_threshold=getattr(args, "loose_threshold", None),
                 density_sample_size=getattr(args, "density_sample_size", 512),
@@ -1026,6 +1074,11 @@ def run_post_training_outputs(
                 index=getattr(args, "comparison_index", 0),
                 max_samples=None,
                 f_threshold=args.f_threshold,
+                input_mode=getattr(args, "input_mode", "rgb"),
+                mask_background=getattr(args, "mask_background", "white"),
+                exclude_truncated=bool(getattr(args, "exclude_truncated", False)),
+                exclude_occluded=bool(getattr(args, "exclude_occluded", False)),
+                exclude_slightly_occluded=bool(getattr(args, "exclude_slightly_occluded", False)),
                 fine_threshold=getattr(args, "fine_threshold", None),
                 loose_threshold=getattr(args, "loose_threshold", None),
                 density_sample_size=getattr(args, "density_sample_size", 512),
@@ -1070,6 +1123,16 @@ def run_training(args):
         args.encoder_name = "resnet18"
     if not hasattr(args, "feature_dim"):
         args.feature_dim = 512
+    if not hasattr(args, "input_mode"):
+        args.input_mode = "rgb"
+    if not hasattr(args, "mask_background"):
+        args.mask_background = "white"
+    if not hasattr(args, "exclude_truncated"):
+        args.exclude_truncated = False
+    if not hasattr(args, "exclude_occluded"):
+        args.exclude_occluded = False
+    if not hasattr(args, "exclude_slightly_occluded"):
+        args.exclude_slightly_occluded = False
     if not hasattr(args, "pretrained"):
         args.pretrained = True
     if not hasattr(args, "freeze_encoder"):
@@ -1166,6 +1229,13 @@ def run_training(args):
     args.detail_coverage_exponent = max(0.0, float(args.detail_coverage_exponent or 0.0))
     args.uniformity_weight = max(0.0, float(args.uniformity_weight or 0.0))
     args.uniformity_sample_size = max(0, int(args.uniformity_sample_size or 0))
+    if args.input_mode not in {"rgb", "masked_rgb"}:
+        args.input_mode = "rgb"
+    if args.mask_background not in {"white", "black"}:
+        args.mask_background = "white"
+    args.exclude_truncated = bool(args.exclude_truncated)
+    args.exclude_occluded = bool(args.exclude_occluded)
+    args.exclude_slightly_occluded = bool(args.exclude_slightly_occluded)
     if args.decoder_type not in {"mlp", "refine_mlp"}:
         args.decoder_type = "mlp"
     args.coarse_points = max(1, int(args.coarse_points or 512))
@@ -1191,6 +1261,14 @@ def run_training(args):
     device = select_training_device(args.device)
     logger.info("Starting baseline training on device=%s", device)
     logger.info("Output directory: %s", output_dir)
+    logger.info(
+        "Input pipeline: input_mode=%s mask_background=%s exclude_truncated=%s exclude_occluded=%s exclude_slightly_occluded=%s",
+        args.input_mode,
+        args.mask_background,
+        args.exclude_truncated,
+        args.exclude_occluded,
+        args.exclude_slightly_occluded,
+    )
     split_validation = {}
     if args.dataset_mode == "processed":
         split_validation = validate_processed_splits(processed_dir, args.split, args.val_split)
@@ -1237,6 +1315,11 @@ def run_training(args):
             max_samples=args.max_samples,
             expected_num_points=args.num_points,
             transform=train_transform,
+            input_mode=args.input_mode,
+            mask_background=args.mask_background,
+            exclude_truncated=args.exclude_truncated,
+            exclude_occluded=args.exclude_occluded,
+            exclude_slightly_occluded=args.exclude_slightly_occluded,
         )
         validation_max_samples = args.val_max_samples
         if validation_max_samples is None:
@@ -1248,6 +1331,11 @@ def run_training(args):
             categories=args.categories,
             max_samples=validation_max_samples,
             expected_num_points=args.num_points,
+            input_mode=args.input_mode,
+            mask_background=args.mask_background,
+            exclude_truncated=args.exclude_truncated,
+            exclude_occluded=args.exclude_occluded,
+            exclude_slightly_occluded=args.exclude_slightly_occluded,
         )
     else:
         dataset = Pix3DDataset(
@@ -1625,6 +1713,11 @@ def run_training(args):
         "image_size": args.image_size,
         "model_type": "resnet_pointcloud",
         "encoder_name": args.encoder_name,
+        "input_mode": args.input_mode,
+        "mask_background": args.mask_background,
+        "exclude_truncated": args.exclude_truncated,
+        "exclude_occluded": args.exclude_occluded,
+        "exclude_slightly_occluded": args.exclude_slightly_occluded,
         "decoder_type": args.decoder_type,
         "coarse_points": args.coarse_points,
         "refine_offset_scale": args.refine_offset_scale,

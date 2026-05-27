@@ -160,6 +160,27 @@ $env:KMP_DUPLICATE_LIB_OK="TRUE"
 python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 40 --batch-size 16 --encoder-name resnet50 --feature-dim 2048 --decoder-type refine_mlp --coarse-points 512 --refine-offset-scale 0.08 --num-points 2048 --output-dir results/visual_loss_detail_uniform_refine_mlp_chair --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.005 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512 --detail-coverage-weight 0.5 --detail-coverage-k 8 --detail-coverage-sample-size 512 --detail-coverage-max-weight 3.0 --detail-coverage-exponent 1.0 --uniformity-weight 0.003 --uniformity-sample-size 512 --eval-max-samples 128 --comparison-index 0
 ```
 
+Thu nghiem input Pix3D-native voi mask va loc sample nhiu. Lenh nay giu decoder refine_mlp da chot, nhung train tren cac sample chair khong bi `truncated`/`occluded` va ep input dung mask nen den:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.training.training_pipeline --dataset-mode processed --processed-dir data/processed_2048 --categories chair --epochs 40 --batch-size 16 --encoder-name resnet50 --feature-dim 2048 --decoder-type refine_mlp --coarse-points 512 --refine-offset-scale 0.08 --num-points 2048 --input-mode masked_rgb --mask-background black --exclude-truncated --exclude-occluded --output-dir results/visual_masked_clean_refine_mlp_chair --device cuda --no-resume --amp --lr-scheduler plateau --freeze-encoder --unfreeze-epoch 6 --augment --chamfer-gt-weight 1.5 --repulsion-weight 0.005 --repulsion-k 8 --repulsion-radius 0.03 --repulsion-sample-size 512 --eval-max-samples 128 --comparison-index 0
+```
+
+Luu y: `processed_image` hien da duoc crop va apply mask voi nen trang trong preprocessing. Vi vay:
+
+- `--input-mode rgb` = dung anh processed nen trang da co san.
+- `--input-mode masked_rgb --mask-background white` gan nhu tuong duong voi anh processed hien tai.
+- `--input-mode masked_rgb --mask-background black` la bien the ro rang hon de model tap trung vao silhouette/object.
+- `--exclude-truncated --exclude-occluded` giup train tren target sach hon, giam cac case anh dau vao khong du thong tin nhung GT van la CAD day du.
+
+Sau khi train, chay fixed benchmark 10 sample voi checkpoint moi:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK="TRUE"
+python -m src.evaluation.evaluate_fixed_visual_benchmark --manifest benchmarks/fixed_test_samples_chair.csv --checkpoint results/visual_masked_clean_refine_mlp_chair/outputs/checkpoints/best_model.pt --processed-dir data/processed_2048 --output-dir results/visual_masked_clean_refine_mlp_chair_fixed_benchmark --device cuda
+```
+
 Artifact duoc luu vao:
 
 ```text
