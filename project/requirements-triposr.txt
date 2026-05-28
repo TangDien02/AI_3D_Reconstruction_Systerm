@@ -1,0 +1,22 @@
+# TripoSR core runtime dependencies.
+# Use Python 3.10 or 3.11. The official pinned stack is not reliable on Python 3.13+.
+# Install after project/requirements.txt, then clone the official TripoSR repo:
+# git clone https://github.com/VAST-AI-Research/TripoSR.git external/TripoSR
+numpy<2
+omegaconf==2.3.0
+einops==0.7.0
+transformers==4.35.0
+trimesh==4.0.5
+huggingface-hub
+imageio[ffmpeg]
+xatlas==0.0.9
+moderngl==5.10.0
+scikit-image
+
+# Optional for automatic background removal. Install this if you want to run
+# without --no-remove-bg.
+rembg
+
+# Optional native marching-cubes backend. This is faster than the bundled
+# scikit-image fallback but requires C++ build tools on Windows.
+# git+https://github.com/tatsy/torchmcubes.git

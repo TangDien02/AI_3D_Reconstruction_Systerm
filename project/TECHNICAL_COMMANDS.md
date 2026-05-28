@@ -8,7 +8,43 @@ Tai lieu audit chi tiet ve folder/file/function/thuat toan nam tai:
 PROJECT_AUDIT.md
 ```
 
-Luu y: pipeline hien tai la **single image -> point cloud**, khong phai video 360 -> mesh `.glb`. Cac endpoint video/detection trong `server` hien van la mock.
+## 0. TripoSR core branch
+
+Nhanh nhat de test rieng core TripoSR, chua noi backend/frontend:
+
+```powershell
+py -3.10 -m venv .venv-triposr
+.\.venv-triposr\Scripts\Activate.ps1
+.\scripts\install_triposr_core.ps1
+python -m src.reconstruction.triposr_runner --image data\processed_2048\images\chair\0001.png --output-dir results\triposr_core --device auto
+```
+
+Dung Python 3.10 hoac 3.11 cho TripoSR. `.venv-gpu` hien tai trong workspace dang la Python 3.14, qua moi voi dependency pinned cua TripoSR.
+
+Neu anh dau vao da crop/segment san va co nen sach:
+
+```powershell
+python -m src.reconstruction.triposr_runner --image path\to\object.png --output-dir results\triposr_core --no-remove-bg
+```
+
+Output core:
+
+```text
+results/triposr_core/<image_stem>/
+  mesh.obj
+  pointcloud.npy
+  pointcloud.ply
+  preview.png
+  triposr_summary.json
+```
+
+Test contract core khong can tai weight TripoSR:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Luu y: core moi la **single object image -> TripoSR mesh -> sampled point cloud**. Cac endpoint video/detection trong `server` hien van la mock/chua duoc noi vao core moi.
 
 ## 1. Cai moi truong Python
 
