@@ -32,7 +32,7 @@ def save_pointcloud_obj(
     points: np.ndarray | Sequence[Sequence[float]],
     output_path: str | Path,
     max_vertices: int | None = 2048,
-    method: str = "convex_hull",
+    method: str = "vertices",
 ) -> tuple[Path, dict[str, int | str | bool]]:
     points_np = _sample_points(ensure_pointcloud_array(points), max_vertices)
     output_path = Path(output_path)
@@ -51,6 +51,8 @@ def save_pointcloud_obj(
     lines = [
         "# Generated from reconstructed point cloud",
         f"# vertices={len(points_np)} faces={len(faces)} method={method}",
+        "# surface_reconstruction=false",
+        "# note=OBJ contains point vertices only unless method=convex_hull is explicitly requested.",
     ]
     if used_fallback:
         lines.append("# fallback=vertices_only")
@@ -67,4 +69,10 @@ def save_pointcloud_obj(
         "vertices": int(len(points_np)),
         "faces": int(len(faces)),
         "fallback_vertices_only": used_fallback or len(faces) == 0,
+        "surface_reconstruction": bool(len(faces) > 0 and method == "convex_hull"),
+        "primary_output": "pointcloud_ply",
+        "warning": (
+            "OBJ is not a final mesh reconstruction. Use pointcloud_ply as the primary output "
+            "until a real surface reconstruction method is added."
+        ),
     }

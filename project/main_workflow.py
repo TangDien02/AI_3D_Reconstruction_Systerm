@@ -24,6 +24,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="results/chair_resnet_baseline")
     parser.add_argument("--categories", nargs="+", default=["chair"])
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument(
+        "--margin-ratio",
+        type=float,
+        default=0.0,
+        help="Optional bbox expansion before crop/mask/square-pad preprocessing.",
+    )
+    parser.add_argument("--min-margin-px", type=int, default=0)
     parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
@@ -107,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-images", action="store_true")
     parser.add_argument("--skip-pointclouds", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=100)
+    parser.add_argument("--num-workers", type=int, default=1)
     args = parser.parse_args()
     if args.max_samples is not None and args.max_samples < 0:
         args.max_samples = None
@@ -179,6 +187,9 @@ def run_preprocessing(args: argparse.Namespace) -> dict[str, Path]:
             overwrite=args.overwrite,
             max_samples=args.max_samples,
             progress_interval=args.progress_interval,
+            margin_ratio=args.margin_ratio,
+            min_margin_px=args.min_margin_px,
+            num_workers=max(1, args.num_workers),
         )
         logger.info("Processed images/masks: %s", image_count)
 

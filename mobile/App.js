@@ -22,8 +22,8 @@ const RECON_CAPTURE_QUALITY = 0.92;
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
   'YOLO phat hien va crop vat the',
-  'ResNet reconstruct point cloud',
-  'Export PLY va OBJ mesh',
+  'TripoSR reconstruct mesh',
+  'Export GLB la output chinh',
 ];
 
 export default function App() {
@@ -282,7 +282,7 @@ export default function App() {
       const scaledBbox = scaleBboxToImage(selectedObject.bbox, sourceSize, targetSize);
 
       setSelectedFrameUri(reconstructionPhoto.uri);
-      setCameraStatus('Dang YOLO crop full-res + ResNet reconstruct + export OBJ...');
+      setCameraStatus('Dang YOLO crop full-res + TripoSR reconstruct + export GLB...');
 
       const formData = new FormData();
       formData.append('image', {
@@ -308,7 +308,7 @@ export default function App() {
       const payload = await response.json();
       setSegmentResult(payload.segmentation || null);
       setReconstructionResult(payload.reconstruction || null);
-      setCameraStatus(`Da reconstruct ${payload.selected?.label || selectedObject.label}. OBJ san sang.`);
+      setCameraStatus(`Da reconstruct ${payload.selected?.label || selectedObject.label}. GLB san sang.`);
     } catch (error) {
       setSegmentResult(null);
       setReconstructionResult(null);
@@ -470,7 +470,9 @@ export default function App() {
                   source={{ uri: getServerFileUrl(segmentResult.files.masked_crop) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>Masked crop da dua vao ResNet.</Text>
+                <Text style={styles.segmentPreviewText}>
+                  Mask {segmentResult.mask?.source || 'yolo'} da dua vao TripoSR.
+                </Text>
               </View>
             )}
             {reconstructionResult?.files?.preview_png && (
@@ -480,23 +482,45 @@ export default function App() {
                   style={styles.reconstructionPreviewImage}
                 />
                 <View style={styles.reconstructionInfo}>
-                  <Text style={styles.reconstructionTitle}>OBJ model ready</Text>
+                  <Text style={styles.reconstructionTitle}>
+                    {reconstructionResult.primary_output === 'mesh_glb' ? 'GLB mesh ready' : '3D output ready'}
+                  </Text>
                   <Text style={styles.reconstructionText}>
-                    {reconstructionResult.num_points || 0} points -> {reconstructionResult.mesh?.faces || 0} faces
+                    {reconstructionResult.mesh?.vertices || 0} vertices, {reconstructionResult.mesh?.faces || 0} faces.
                   </Text>
                   <View style={styles.linkRow}>
-                    <Pressable
-                      style={styles.fileLink}
-                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.mesh_obj))}
-                    >
-                      <Text style={styles.fileLinkText}>OBJ</Text>
-                    </Pressable>
-                    <Pressable
-                      style={styles.fileLink}
-                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.pointcloud_ply))}
-                    >
-                      <Text style={styles.fileLinkText}>PLY</Text>
-                    </Pressable>
+                    {reconstructionResult.files.mesh_glb && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.mesh_glb))}
+                      >
+                        <Text style={styles.fileLinkText}>GLB</Text>
+                      </Pressable>
+                    )}
+                    {reconstructionResult.files.mesh_obj && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.mesh_obj))}
+                      >
+                        <Text style={styles.fileLinkText}>OBJ</Text>
+                      </Pressable>
+                    )}
+                    {reconstructionResult.files.pointcloud_ply && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.pointcloud_ply))}
+                      >
+                        <Text style={styles.fileLinkText}>PLY</Text>
+                      </Pressable>
+                    )}
+                    {reconstructionResult.files.texture_png && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.texture_png))}
+                      >
+                        <Text style={styles.fileLinkText}>TEX</Text>
+                      </Pressable>
+                    )}
                   </View>
                 </View>
               </View>
@@ -542,7 +566,7 @@ export default function App() {
           <Text style={styles.permissionTitle}>Cần quyền camera</Text>
           <Text style={styles.permissionText}>
             Ứng dụng cần quyền camera để quét object, gửi YOLO crop về backend và tái tạo
-            point cloud / OBJ bằng checkpoint ResNet.
+            mesh GLB bằng TripoSR.
           </Text>
           <Pressable style={styles.primaryButton} onPress={openCamera}>
             <Text style={styles.primaryButtonText}>Cho phép camera</Text>
@@ -570,7 +594,7 @@ export default function App() {
           <Text style={styles.title}>Quét vật thể và tái tạo mô hình 3D</Text>
           <Text style={styles.subtitle}>
             Camera mobile detect object liên tục, chọn bbox, gửi ảnh sang backend để YOLO crop,
-            ResNet reconstruct point cloud và export file OBJ.
+            TripoSR reconstruct mesh và export file GLB.
           </Text>
         </View>
 
@@ -589,8 +613,8 @@ export default function App() {
         <View style={styles.noteBox}>
           <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
           <Text style={styles.noteText}>
-            Đã nối camera mobile với backend. Để chạy reconstruction thật, backend cần checkpoint
-            ResNet hợp lệ ở cấu hình RECON_BASELINE_CHECKPOINT hoặc output mặc định.
+            Đã nối camera mobile với backend. Để chạy reconstruction thật, backend cần TRIPOSR_DIR
+            trỏ tới checkout TripoSR đã cài dependency/model.
           </Text>
         </View>
       </View>

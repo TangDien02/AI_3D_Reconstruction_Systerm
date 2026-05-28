@@ -39,6 +39,7 @@ yarn-error.*
 
 # local env files
 .env*.local
+tester/.env
 .venv/
 server/uploads/
 server/models/
@@ -61,6 +62,7 @@ project/results/week2_eda/
 project/data/processed/images/
 project/data/processed/masks/
 project/data/processed/points/
+project/data/processed_2048_squarepad_chair/
 
 project/results/baseline/
 project/results/eda/

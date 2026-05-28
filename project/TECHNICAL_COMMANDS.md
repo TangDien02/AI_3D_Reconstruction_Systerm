@@ -324,6 +324,10 @@ python run_all.py --category chair --epochs 5 --batch-size 2 --output-dir result
 
 ```powershell
 cd ..\server
+$env:RECON_BACKEND="triposr"
+$env:TRIPOSR_DIR="C:\models\TripoSR"
+$env:TRIPOSR_MODEL_SAVE_FORMAT="glb"
+$env:SAM2_ENABLED="false"
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -337,4 +341,61 @@ Endpoint inference anh:
 
 ```powershell
 curl -X POST "http://localhost:8000/reconstruct-image" -F "image=@..\project\data\processed\images\chair\2003.png"
+```
+
+## 11. Cai TripoSR cho backend main
+
+TripoSR la backend reconstruction chinh. Repo nay chi goi adapter qua `TRIPOSR_DIR`,
+khong vendor source TripoSR vao `project/src`.
+
+```powershell
+git clone https://github.com/VAST-AI-Research/TripoSR C:\models\TripoSR
+cd C:\models\TripoSR
+python -m pip install --upgrade setuptools
+pip install -r requirements.txt
+pip install git+https://github.com/tatsy/torchmcubes.git
+```
+
+Chay test truc tiep TripoSR:
+
+```powershell
+python run.py examples\chair.png --output-dir output --model-save-format glb
+```
+
+Chay backend voi TripoSR:
+
+```powershell
+cd <repo>\server
+$env:RECON_BACKEND="triposr"
+$env:TRIPOSR_DIR="C:\models\TripoSR"
+$env:TRIPOSR_MODEL_SAVE_FORMAT="glb"
+$env:TRIPOSR_BAKE_TEXTURE="false"
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Them SAM2 refine mask sau YOLO:
+
+```powershell
+git clone https://github.com/facebookresearch/sam2 C:\models\sam2
+cd C:\models\sam2
+pip install -e .
+
+cd <repo>\server
+$env:SAM2_ENABLED="true"
+$env:SAM2_MODEL_ID="facebook/sam2-hiera-large"
+$env:SAM2_DEVICE="cuda"
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Neu muon fail request khi SAM2 loi thay vi fallback ve YOLO:
+
+```powershell
+$env:SAM2_REQUIRED="true"
+```
+
+Neu can quay ve baseline point cloud cu:
+
+```powershell
+$env:RECON_BACKEND="legacy_pointcloud"
+$env:RECON_BASELINE_CHECKPOINT="..\project\results\all_categories_resnet50_2048pts_30ep_aug\outputs\checkpoints\best_model.pt"
 ```

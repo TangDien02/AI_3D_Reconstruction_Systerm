@@ -12,7 +12,16 @@ Scene image / ảnh thực tế
 → xuất object set gồm label/unknown + bbox/mask + point cloud/mesh + metadata
 ```
 
-Trạng thái code hiện tại trong `project/` đang chạy chắc nhất ở nhánh:
+Trạng thái production path hiện tại:
+
+```text
+Scene/object image
+→ YOLO detect + optional SAM2 mask refinement + crop/mask/pad
+→ TripoSR image-to-mesh backend
+→ GLB mesh output chính
+```
+
+Baseline nghiên cứu trong `project/` vẫn còn để benchmark:
 
 ```text
 Pix3D object image

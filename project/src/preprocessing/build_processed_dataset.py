@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import ast
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 from pathlib import Path
 
@@ -12,21 +12,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from src.preprocessing.metadata_cleaner import clean_pix3d_metadata, save_metadata_and_splits
-
-
-def parse_bbox(value: object, image_size: tuple[int, int]) -> tuple[int, int, int, int]:
-    width, height = image_size
-    if isinstance(value, str):
-        value = ast.literal_eval(value)
-    if not isinstance(value, (list, tuple)) or len(value) != 4:
-        return 0, 0, width, height
-
-    x1, y1, x2, y2 = [int(round(float(v))) for v in value]
-    x1 = max(0, min(x1, width - 1))
-    y1 = max(0, min(y1, height - 1))
-    x2 = max(x1 + 1, min(x2, width))
-    y2 = max(y1 + 1, min(y2, height))
-    return x1, y1, x2, y2
+from src.preprocessing.object_preprocess import load_image_safely, preprocess_object_image
 
 
 def preprocess_image_and_mask(
@@ -37,31 +23,23 @@ def preprocess_image_and_mask(
     bbox: object,
     image_size: int = 224,
     overwrite: bool = False,
+    margin_ratio: float = 0.0,
+    min_margin_px: int = 0,
 ) -> tuple[Path, Path]:
-    import numpy as np
-    from PIL import Image
-
     output_image_path = Path(output_image_path)
     output_mask_path = Path(output_mask_path)
     if output_image_path.is_file() and output_mask_path.is_file() and not overwrite:
         return output_image_path, output_mask_path
 
     image = load_image_safely(image_path, mode="RGB")
-    mask = load_image_safely(mask_path, mode="L").resize(image.size)
-    crop_box = parse_bbox(bbox, image.size)
-
-    image = image.crop(crop_box)
-    mask = mask.crop(crop_box)
-
-    image_np = np.asarray(image).astype(np.uint8)
-    mask_np = np.asarray(mask) > 0
-    masked_np = np.full_like(image_np, 255)
-    masked_np[mask_np] = image_np[mask_np]
-
-    processed_image = Image.fromarray(masked_np).resize((image_size, image_size), Image.Resampling.BILINEAR)
-    processed_mask = Image.fromarray((mask_np.astype(np.uint8) * 255)).resize(
-        (image_size, image_size),
-        Image.Resampling.NEAREST,
+    mask = load_image_safely(mask_path, mode="L")
+    processed_image, processed_mask, _ = preprocess_object_image(
+        image=image,
+        mask=mask,
+        bbox=bbox,
+        image_size=image_size,
+        margin_ratio=margin_ratio,
+        min_margin_px=min_margin_px,
     )
 
     output_image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,14 +66,17 @@ def build_processed_images(
     overwrite: bool = False,
     max_samples: int | None = None,
     progress_interval: int = 100,
+    margin_ratio: float = 0.0,
+    min_margin_px: int = 0,
+    num_workers: int = 1,
 ) -> int:
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)
     rows = metadata.head(max_samples) if max_samples is not None else metadata
+    row_items = list(rows.itertuples(index=False))
     total = len(rows)
 
-    processed_count = 0
-    for row in rows.itertuples(index=False):
+    def process_row(row) -> None:
         preprocess_image_and_mask(
             image_path=raw_dir / str(row.img),
             mask_path=raw_dir / str(row.mask),
@@ -104,14 +85,32 @@ def build_processed_images(
             bbox=row.bbox,
             image_size=image_size,
             overwrite=overwrite,
+            margin_ratio=margin_ratio,
+            min_margin_px=min_margin_px,
         )
-        processed_count += 1
+
+    def report_progress(count: int) -> None:
         if progress_interval > 0 and (
-            processed_count == 1
-            or processed_count % progress_interval == 0
-            or processed_count == total
+            count == 1
+            or count % progress_interval == 0
+            or count == total
         ):
-            print(f"Processed images/masks: {processed_count}/{total}", flush=True)
+            print(f"Processed images/masks: {count}/{total}", flush=True)
+
+    processed_count = 0
+    if num_workers <= 1:
+        for row in row_items:
+            process_row(row)
+            processed_count += 1
+            report_progress(processed_count)
+        return processed_count
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(process_row, row) for row in row_items]
+        for future in as_completed(futures):
+            future.result()
+            processed_count += 1
+            report_progress(processed_count)
 
     return processed_count
 
@@ -122,6 +121,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="data/processed")
     parser.add_argument("--categories", nargs="*", default=None)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument(
+        "--margin-ratio",
+        type=float,
+        default=0.0,
+        help="Optional bbox expansion before square padding. Use 0.08 to mirror backend object crops.",
+    )
+    parser.add_argument("--min-margin-px", type=int, default=0)
     parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
@@ -132,6 +138,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-pointclouds", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--progress-interval", type=int, default=100)
+    parser.add_argument("--num-workers", type=int, default=1)
     return parser.parse_args()
 
 
@@ -166,6 +173,9 @@ def main() -> None:
             overwrite=args.overwrite,
             max_samples=args.max_samples,
             progress_interval=args.progress_interval,
+            margin_ratio=args.margin_ratio,
+            min_margin_px=args.min_margin_px,
+            num_workers=max(1, args.num_workers),
         )
         print(f"Processed images/masks: {count}")
 

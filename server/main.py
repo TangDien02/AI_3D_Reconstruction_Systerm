@@ -32,6 +32,8 @@ PROJECT_DIR = REPO_DIR / "project"
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+from src.preprocessing import object_preprocess
+
 UPLOAD_DIR = SERVER_DIR / "uploads"
 MODEL_OUTPUT_DIR = SERVER_DIR / "models"
 SEGMENT_OUTPUT_DIR = SERVER_DIR / "segment_outputs"
@@ -56,7 +58,13 @@ DETECTION_CONFIDENCE = env_float("YOLO_DETECTION_CONFIDENCE", 0.20)
 DETECTION_IMAGE_SIZE = env_int("YOLO_DETECTION_IMAGE_SIZE", 640)
 DETECTION_MAX_OBJECTS = env_int("YOLO_DETECTION_MAX_OBJECTS", 20)
 DETECTION_IOU = env_float("YOLO_DETECTION_IOU", 0.45)
-MODEL_INPUT_IMAGE_SIZE = env_int("RECON_MODEL_INPUT_IMAGE_SIZE", 224)
+RECON_BACKEND = os.environ.get("RECON_BACKEND", "triposr").strip().lower()
+if RECON_BACKEND in {"baseline", "pointcloud"}:
+    RECON_BACKEND = "legacy_pointcloud"
+if RECON_BACKEND not in {"triposr", "legacy_pointcloud"}:
+    RECON_BACKEND = "triposr"
+DEFAULT_MODEL_INPUT_IMAGE_SIZE = 512 if RECON_BACKEND == "triposr" else 224
+MODEL_INPUT_IMAGE_SIZE = env_int("RECON_MODEL_INPUT_IMAGE_SIZE", DEFAULT_MODEL_INPUT_IMAGE_SIZE)
 MODEL_INPUT_MARGIN_RATIO = env_float("RECON_MODEL_INPUT_MARGIN_RATIO", 0.08)
 MODEL_INPUT_MIN_MARGIN_PX = env_int("RECON_MODEL_INPUT_MIN_MARGIN_PX", 8)
 DEFAULT_BASELINE_CHECKPOINT = (
@@ -252,6 +260,78 @@ def write_json(path: Path, payload: dict) -> Path:
     return path
 
 
+def needs_baseline_checkpoint() -> bool:
+    return RECON_BACKEND == "legacy_pointcloud"
+
+
+def triposr_readiness() -> dict[str, object]:
+    try:
+        from src.reconstruction.triposr_runner import TripoSRConfig
+    except Exception as exc:
+        return {
+            "backend": "triposr",
+            "available": False,
+            "error": f"TripoSR adapter import failed: {exc}",
+        }
+    return TripoSRConfig.from_env().readiness()
+
+
+def sam2_readiness() -> dict[str, object]:
+    try:
+        from src.segmentation.sam2_refiner import SAM2Config
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "available": False,
+            "error": f"SAM2 adapter import failed: {exc}",
+        }
+    return SAM2Config.from_env().readiness()
+
+
+def maybe_refine_mask_with_sam2(
+    pil_image: Image.Image,
+    bbox_xyxy: tuple[float, float, float, float],
+    fallback_mask: Image.Image,
+) -> tuple[Image.Image, dict[str, object]]:
+    try:
+        from src.segmentation.sam2_refiner import SAM2Config, refine_mask_from_bbox
+    except Exception as exc:
+        return fallback_mask, {
+            "source": "yolo",
+            "sam2_enabled": False,
+            "sam2_available": False,
+            "sam2_error": f"SAM2 adapter import failed: {exc}",
+        }
+
+    config = SAM2Config.from_env()
+    status = config.readiness()
+    if not config.enabled:
+        return fallback_mask, {
+            "source": "yolo",
+            "sam2_enabled": False,
+            "sam2_available": status.get("available"),
+        }
+
+    try:
+        refined_mask, metadata = refine_mask_from_bbox(
+            image=pil_image,
+            bbox_xyxy=bbox_xyxy,
+            config=config,
+        )
+        metadata["fallback_source"] = "yolo"
+        return refined_mask, metadata
+    except Exception as exc:
+        if config.required:
+            raise HTTPException(status_code=503, detail=f"SAM2 mask refinement failed: {exc}") from exc
+        return fallback_mask, {
+            "source": "yolo",
+            "sam2_enabled": True,
+            "sam2_available": status.get("available"),
+            "sam2_error": str(exc),
+            "fallback_reason": "sam2_failed",
+        }
+
+
 async def read_upload_image(image: UploadFile) -> Image.Image:
     image_bytes = await image.read()
     if not image_bytes:
@@ -376,44 +456,18 @@ def build_segment_model_input(
     full_mask: Image.Image,
     selected_xyxy: tuple[float, float, float, float],
 ) -> tuple[Image.Image, Image.Image, dict]:
-    image_width, image_height = pil_image.size
-    mask_bbox = full_mask.getbbox()
-    base_bbox = union_bbox_xyxy(
-        selected_xyxy,
-        tuple(float(value) for value in mask_bbox) if mask_bbox else None,
+    return object_preprocess.preprocess_object_image(
+        image=pil_image,
+        mask=full_mask,
+        bbox=selected_xyxy,
+        image_size=MODEL_INPUT_IMAGE_SIZE,
+        margin_ratio=MODEL_INPUT_MARGIN_RATIO,
+        min_margin_px=MODEL_INPUT_MIN_MARGIN_PX,
     )
-    expanded_bbox = expand_bbox_xyxy(
-        base_bbox,
-        image_width=image_width,
-        image_height=image_height,
-    )
-    model_crop_box = bbox_to_crop_box(expanded_bbox, image_width, image_height)
-    _, model_mask_crop, model_masked_crop, _ = compose_masked_crop(pil_image, full_mask, model_crop_box)
-    padded_image, padding = square_pad_image(model_masked_crop, fill=(255, 255, 255))
-    padded_mask, _ = square_pad_image(model_mask_crop, fill=0)
-    model_input = padded_image.resize(
-        (MODEL_INPUT_IMAGE_SIZE, MODEL_INPUT_IMAGE_SIZE),
-        Image.Resampling.BILINEAR,
-    )
-    model_input_mask = padded_mask.resize(
-        (MODEL_INPUT_IMAGE_SIZE, MODEL_INPUT_IMAGE_SIZE),
-        Image.Resampling.NEAREST,
-    )
-    metadata = {
-        "mode": "segmented_mask_crop_square_pad",
-        "image_size": MODEL_INPUT_IMAGE_SIZE,
-        "background": "white",
-        "margin_ratio": MODEL_INPUT_MARGIN_RATIO,
-        "min_margin_px": MODEL_INPUT_MIN_MARGIN_PX,
-        "base_bbox": crop_box_payload(bbox_to_crop_box(base_bbox, image_width, image_height)),
-        "model_crop_bbox": crop_box_payload(model_crop_box),
-        "square_padding": padding,
-    }
-    return model_input, model_input_mask, metadata
 
 
 def build_plain_model_input(pil_image: Image.Image) -> tuple[Image.Image, dict]:
-    padded_image, padding = square_pad_image(pil_image.convert("RGB"), fill=(255, 255, 255))
+    padded_image, padding = object_preprocess.square_pad_image(pil_image.convert("RGB"), fill=(255, 255, 255))
     model_input = padded_image.resize(
         (MODEL_INPUT_IMAGE_SIZE, MODEL_INPUT_IMAGE_SIZE),
         Image.Resampling.BILINEAR,
@@ -442,7 +496,12 @@ def save_segment_artifacts(
     polygon = None
     if result.masks is not None and result.masks.xy is not None and selected_index < len(result.masks.xy):
         polygon = result.masks.xy[selected_index]
-    full_mask = make_mask_from_polygon(polygon, image_width, image_height, selected_xyxy)
+    yolo_mask = make_mask_from_polygon(polygon, image_width, image_height, selected_xyxy)
+    full_mask, mask_metadata = maybe_refine_mask_with_sam2(
+        pil_image=pil_image,
+        bbox_xyxy=selected_xyxy,
+        fallback_mask=yolo_mask,
+    )
 
     crop, mask_crop, masked_crop, transparent_crop = compose_masked_crop(pil_image, full_mask, crop_box)
     model_input, model_input_mask, model_input_metadata = build_segment_model_input(
@@ -481,6 +540,7 @@ def save_segment_artifacts(
         "id": str(selected_index),
         "label": selected_detection["label"],
         "confidence": round(selected_detection["confidence"], 4),
+        "mask_source": mask_metadata.get("source", "yolo"),
         "bbox": {
             "x": round(x1, 2),
             "y": round(y1, 2),
@@ -514,12 +574,13 @@ def save_segment_artifacts(
             "overlay": str(overlay_path),
         },
         "preprocessing": model_input_metadata,
+        "mask": mask_metadata,
     }
     write_json(segment_dir / "segment_summary.json", segment_payload)
     return segment_payload, model_input_path
 
 
-def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
+def save_legacy_pointcloud_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
     try:
         from src.inference.baseline_inference import predict_pointcloud
         from src.utils.mesh_export import save_pointcloud_obj
@@ -558,6 +619,7 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
             "refine_offset_scale": checkpoint.get("refine_offset_scale"),
             "num_points": checkpoint.get("num_points"),
         },
+        "primary_output": "pointcloud_ply",
         "mesh": mesh_summary,
         "files": {
             "pointcloud_npy": to_model_url(npy_path),
@@ -580,6 +642,100 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
     return payload
 
 
+def save_triposr_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
+    try:
+        from src.postprocessing.mesh_io import copy_mesh_asset, summarize_mesh
+        from src.reconstruction.triposr_runner import TripoSRRunner
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"TripoSR dependencies are not ready: {exc}",
+        ) from exc
+
+    output_dir = job_output_dir(MODEL_OUTPUT_DIR, job_id)
+    runner = TripoSRRunner()
+
+    try:
+        runner.validate_ready()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"TripoSR is not configured: {exc}") from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = runner.reconstruct(input_path, output_dir)
+        mesh_source_path = Path(str(result["mesh_path"]))
+        mesh_extension = mesh_source_path.suffix.lower() or ".glb"
+        mesh_path = copy_mesh_asset(mesh_source_path, output_dir / f"model{mesh_extension}")
+
+        texture_path = None
+        if result.get("texture_path"):
+            texture_path = copy_mesh_asset(result["texture_path"], output_dir / "texture.png")
+
+        render_path = None
+        if result.get("render_path"):
+            render_path = copy_mesh_asset(result["render_path"], output_dir / "render.mp4")
+
+        triposr_input_path = None
+        if result.get("prepared_input_path"):
+            triposr_input_path = copy_mesh_asset(result["prepared_input_path"], output_dir / "triposr_input.png")
+
+        preview_path = output_dir / "preview.png"
+        Image.open(triposr_input_path or input_path).convert("RGB").save(preview_path)
+        mesh_summary = summarize_mesh(mesh_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TripoSR reconstruction failed: {exc}") from exc
+
+    primary_key = "mesh_glb" if mesh_path.suffix.lower() == ".glb" else "mesh_obj"
+    files = {
+        primary_key: to_model_url(mesh_path),
+        "preview_png": to_model_url(preview_path),
+        "summary_json": to_model_url(output_dir / "reconstruction_summary.json"),
+    }
+    paths = {
+        "output_dir": str(output_dir),
+        "input_image": str(input_path),
+        primary_key: str(mesh_path),
+        "preview_png": str(preview_path),
+        "summary_json": str(output_dir / "reconstruction_summary.json"),
+    }
+    if texture_path is not None:
+        files["texture_png"] = to_model_url(texture_path)
+        paths["texture_png"] = str(texture_path)
+    if render_path is not None:
+        files["render_mp4"] = to_model_url(render_path)
+        paths["render_mp4"] = str(render_path)
+    if triposr_input_path is not None:
+        files["triposr_input"] = to_model_url(triposr_input_path)
+        paths["triposr_input"] = str(triposr_input_path)
+
+    payload = {
+        "job_id": job_id,
+        "label": label,
+        "backend": "triposr",
+        "primary_output": primary_key,
+        "output_dir": str(output_dir),
+        "input_image": str(input_path),
+        "processing_ms": result.get("processing_ms"),
+        "mesh": mesh_summary,
+        "triposr": {
+            "raw_output_dir": result.get("raw_output_dir"),
+            "config": result.get("config"),
+            "stdout_tail": result.get("stdout_tail"),
+            "stderr_tail": result.get("stderr_tail"),
+        },
+        "files": files,
+        "paths": paths,
+    }
+    write_json(output_dir / "reconstruction_summary.json", payload)
+    return payload
+
+
+def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
+    if RECON_BACKEND == "legacy_pointcloud":
+        return save_legacy_pointcloud_reconstruction_artifacts(input_path, job_id, label=label)
+    return save_triposr_reconstruction_artifacts(input_path, job_id, label=label)
+
+
 @app.on_event("startup")
 def warmup_yolo_model():
     try:
@@ -600,10 +756,15 @@ def warmup_yolo_model():
 
 @app.get("/health")
 def health_check():
+    triposr_status = triposr_readiness()
+    sam2_status = sam2_readiness()
     return {
         "status": "ok",
+        "reconstruction_backend": RECON_BACKEND,
         "baseline_checkpoint_exists": BASELINE_CHECKPOINT.is_file(),
         "baseline_checkpoint": str(BASELINE_CHECKPOINT),
+        "triposr": triposr_status,
+        "sam2": sam2_status,
         "yolo_weights_exists": YOLO_WEIGHTS.is_file(),
         "yolo_device": get_yolo_device(),
         "detector": {
@@ -616,10 +777,12 @@ def health_check():
             "image_size": MODEL_INPUT_IMAGE_SIZE,
             "margin_ratio": MODEL_INPUT_MARGIN_RATIO,
             "min_margin_px": MODEL_INPUT_MIN_MARGIN_PX,
-            "segmented_mode": "segmented_mask_crop_square_pad",
+            "segmented_mode": "crop_mask_square_pad_resize",
             "plain_mode": "plain_square_pad",
+            "mask_refinement": "sam2" if sam2_status.get("enabled") else "yolo",
         },
         "outputs": {
+            "primary_output": "mesh_glb" if RECON_BACKEND == "triposr" else "pointcloud_ply",
             "segment_outputs": "/segment-outputs",
             "models": "/models",
         },
@@ -670,6 +833,7 @@ async def segment_object(
         "files": segment_payload["files"],
         "paths": segment_payload["paths"],
         "preprocessing": segment_payload["preprocessing"],
+        "mask": segment_payload["mask"],
     }
 
 
@@ -774,7 +938,7 @@ async def reconstruct_object(
     bbox_height: float | None = Form(default=None),
 ):
     started_at = time.perf_counter()
-    if not BASELINE_CHECKPOINT.is_file():
+    if needs_baseline_checkpoint() and not BASELINE_CHECKPOINT.is_file():
         raise HTTPException(
             status_code=503,
             detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
@@ -825,7 +989,7 @@ async def reconstruct_object(
 
 @app.post("/reconstruct-image")
 async def reconstruct_image(image: UploadFile = File(...)):
-    if not BASELINE_CHECKPOINT.is_file():
+    if needs_baseline_checkpoint() and not BASELINE_CHECKPOINT.is_file():
         raise HTTPException(
             status_code=503,
             detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
@@ -851,14 +1015,18 @@ async def reconstruct_image(image: UploadFile = File(...)):
     return {
         "job_id": job_id,
         "status": "done",
-        "num_points": reconstruction["num_points"],
+        "backend": reconstruction.get("backend", RECON_BACKEND),
+        "primary_output": reconstruction.get("primary_output"),
+        "num_points": reconstruction.get("num_points"),
         "preprocessing": preprocess_metadata,
         "input_path": str(input_path),
         "model_input_path": str(model_input_path),
-        "pointcloud_npy": reconstruction["paths"]["pointcloud_npy"],
-        "pointcloud_ply": reconstruction["paths"]["pointcloud_ply"],
-        "mesh_obj": reconstruction["paths"]["mesh_obj"],
-        "preview_png": reconstruction["paths"]["preview_png"],
+        "mesh": reconstruction.get("mesh"),
         "files": reconstruction["files"],
-        "mesh": reconstruction["mesh"],
+        "paths": reconstruction["paths"],
+        "preview_png": reconstruction["paths"].get("preview_png"),
+        "mesh_glb": reconstruction["paths"].get("mesh_glb"),
+        "mesh_obj": reconstruction["paths"].get("mesh_obj"),
+        "pointcloud_npy": reconstruction["paths"].get("pointcloud_npy"),
+        "pointcloud_ply": reconstruction["paths"].get("pointcloud_ply"),
     }
