@@ -337,6 +337,10 @@ class TripoSRCore:
         if not meshes:
             raise RuntimeError("TripoSR returned no mesh.")
         mesh = meshes[0]
+        mesh_vertex_count = int(len(getattr(mesh, "vertices", [])))
+        mesh_face_count = int(len(getattr(mesh, "faces", [])))
+        vertex_colors = getattr(getattr(mesh, "visual", None), "vertex_colors", None)
+        has_vertex_colors = _as_uint8_colors(vertex_colors, mesh_vertex_count) is not None
 
         mesh_path = sample_dir / f"mesh.{self.config.model_save_format}"
         mesh.export(mesh_path)
@@ -364,6 +368,13 @@ class TripoSRCore:
             "output_dir": str(sample_dir),
             "num_points": int(points.shape[0]),
             "points_normalized": bool(self.config.normalize_points),
+            "mesh": {
+                "format": self.config.model_save_format,
+                "vertices": mesh_vertex_count,
+                "faces": mesh_face_count,
+                "has_vertex_colors": has_vertex_colors,
+                "colored_mesh_ply": colored_mesh_ply_path is not None,
+            },
             "config": asdict(self.config),
             "runtime": {
                 "device": self.device,
