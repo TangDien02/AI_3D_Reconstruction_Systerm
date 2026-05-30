@@ -12,6 +12,8 @@ from threading import Lock
 import uuid
 from pathlib import Path
 
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -52,6 +54,13 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 DETECTION_CONFIDENCE = env_float("YOLO_DETECTION_CONFIDENCE", 0.20)
 DETECTION_IMAGE_SIZE = env_int("YOLO_DETECTION_IMAGE_SIZE", 640)
 DETECTION_MAX_OBJECTS = env_int("YOLO_DETECTION_MAX_OBJECTS", 20)
@@ -59,17 +68,21 @@ DETECTION_IOU = env_float("YOLO_DETECTION_IOU", 0.45)
 MODEL_INPUT_IMAGE_SIZE = env_int("RECON_MODEL_INPUT_IMAGE_SIZE", 224)
 MODEL_INPUT_MARGIN_RATIO = env_float("RECON_MODEL_INPUT_MARGIN_RATIO", 0.08)
 MODEL_INPUT_MIN_MARGIN_PX = env_int("RECON_MODEL_INPUT_MIN_MARGIN_PX", 8)
-DEFAULT_BASELINE_CHECKPOINT = (
-    PROJECT_DIR
-    / "results"
-    / "all_categories_resnet50_2048pts_30ep_aug"
-    / "outputs"
-    / "checkpoints"
-    / "best_model.pt"
-)
-BASELINE_CHECKPOINT = Path(os.environ.get("RECON_BASELINE_CHECKPOINT", DEFAULT_BASELINE_CHECKPOINT))
-if not BASELINE_CHECKPOINT.is_absolute():
-    BASELINE_CHECKPOINT = PROJECT_DIR / BASELINE_CHECKPOINT
+TRIPOSR_MODEL_NAME_OR_PATH = os.environ.get("TRIPOSR_MODEL_NAME_OR_PATH", "stabilityai/TripoSR")
+TRIPOSR_REPO_DIR = os.environ.get("TRIPOSR_REPO_DIR")
+TRIPOSR_DEVICE = os.environ.get("TRIPOSR_DEVICE", "auto")
+TRIPOSR_CHUNK_SIZE = env_int("TRIPOSR_CHUNK_SIZE", 8192)
+TRIPOSR_MC_RESOLUTION = env_int("TRIPOSR_MC_RESOLUTION", 256)
+TRIPOSR_FOREGROUND_RATIO = env_float("TRIPOSR_FOREGROUND_RATIO", 0.85)
+TRIPOSR_NUM_POINTS = env_int("TRIPOSR_NUM_POINTS", 2048)
+TRIPOSR_MODEL_SAVE_FORMAT = os.environ.get("TRIPOSR_MODEL_SAVE_FORMAT", "glb").lower()
+TRIPOSR_REMOVE_BACKGROUND = env_bool("TRIPOSR_REMOVE_BACKGROUND", True)
+TRIPOSR_SAVE_PREVIEW = env_bool("TRIPOSR_SAVE_PREVIEW", True)
+TRIPOSR_BAKE_TEXTURE = env_bool("TRIPOSR_BAKE_TEXTURE", False)
+TRIPOSR_TEXTURE_RESOLUTION = env_int("TRIPOSR_TEXTURE_RESOLUTION", 1024)
+TRIPOSR_TEXTURE_PADDING = env_int("TRIPOSR_TEXTURE_PADDING", 0)
+TRIPOSR_CROP_MARGIN_RATIO = env_float("TRIPOSR_CROP_MARGIN_RATIO", 0.16)
+TRIPOSR_CROP_MIN_MARGIN_PX = env_int("TRIPOSR_CROP_MIN_MARGIN_PX", 16)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SEGMENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,6 +91,8 @@ app.mount("/models", StaticFiles(directory=MODEL_OUTPUT_DIR), name="models")
 
 _yolo_model = None
 _yolo_model_lock = Lock()
+_triposr_core = None
+_triposr_core_lock = Lock()
 
 
 def get_yolo_device() -> str:
@@ -116,6 +131,54 @@ def get_yolo_model():
             except Exception:
                 pass
     return _yolo_model
+
+
+def build_triposr_config():
+    try:
+        from src.reconstruction.triposr_runner import TripoSRConfig
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"TripoSR core is not importable: {exc}",
+        ) from exc
+
+    return TripoSRConfig(
+        model_name_or_path=TRIPOSR_MODEL_NAME_OR_PATH,
+        triposr_repo_dir=TRIPOSR_REPO_DIR,
+        device=TRIPOSR_DEVICE,
+        chunk_size=TRIPOSR_CHUNK_SIZE,
+        mc_resolution=TRIPOSR_MC_RESOLUTION,
+        foreground_ratio=TRIPOSR_FOREGROUND_RATIO,
+        remove_background=TRIPOSR_REMOVE_BACKGROUND,
+        num_points=TRIPOSR_NUM_POINTS,
+        model_save_format=TRIPOSR_MODEL_SAVE_FORMAT,
+        normalize_points=True,
+        bake_texture=TRIPOSR_BAKE_TEXTURE,
+        texture_resolution=TRIPOSR_TEXTURE_RESOLUTION,
+        texture_padding=TRIPOSR_TEXTURE_PADDING or None,
+    )
+
+
+def get_triposr_core():
+    global _triposr_core
+
+    if _triposr_core is not None:
+        return _triposr_core
+
+    with _triposr_core_lock:
+        if _triposr_core is None:
+            try:
+                from src.reconstruction.triposr_runner import TripoSRCore
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"TripoSR dependencies are not ready: {exc}",
+                ) from exc
+            try:
+                _triposr_core = TripoSRCore(config=build_triposr_config())
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"TripoSR init failed: {exc}") from exc
+    return _triposr_core
 
 
 def clamp_bbox_xyxy(
@@ -412,6 +475,32 @@ def build_segment_model_input(
     return model_input, model_input_mask, metadata
 
 
+def build_triposr_crop_input(
+    pil_image: Image.Image,
+    selected_xyxy: tuple[float, float, float, float],
+) -> tuple[Image.Image, dict]:
+    image_width, image_height = pil_image.size
+    expanded_bbox = expand_bbox_xyxy(
+        selected_xyxy,
+        image_width=image_width,
+        image_height=image_height,
+        margin_ratio=TRIPOSR_CROP_MARGIN_RATIO,
+        min_margin_px=TRIPOSR_CROP_MIN_MARGIN_PX,
+    )
+    crop_box = bbox_to_crop_box(expanded_bbox, image_width, image_height)
+    crop = pil_image.crop(crop_box).convert("RGB")
+    metadata = {
+        "mode": "bbox_crop_for_triposr_rembg",
+        "crop_strategy": "yolo_bbox_with_margin",
+        "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
+        "margin_ratio": TRIPOSR_CROP_MARGIN_RATIO,
+        "min_margin_px": TRIPOSR_CROP_MIN_MARGIN_PX,
+        "base_bbox": crop_box_payload(bbox_to_crop_box(selected_xyxy, image_width, image_height)),
+        "triposr_crop_bbox": crop_box_payload(crop_box),
+    }
+    return crop, metadata
+
+
 def build_plain_model_input(pil_image: Image.Image) -> tuple[Image.Image, dict]:
     padded_image, padding = square_pad_image(pil_image.convert("RGB"), fill=(255, 255, 255))
     model_input = padded_image.resize(
@@ -445,6 +534,10 @@ def save_segment_artifacts(
     full_mask = make_mask_from_polygon(polygon, image_width, image_height, selected_xyxy)
 
     crop, mask_crop, masked_crop, transparent_crop = compose_masked_crop(pil_image, full_mask, crop_box)
+    triposr_crop, triposr_crop_metadata = build_triposr_crop_input(
+        pil_image=pil_image,
+        selected_xyxy=selected_xyxy,
+    )
     model_input, model_input_mask, model_input_metadata = build_segment_model_input(
         pil_image=pil_image,
         full_mask=full_mask,
@@ -462,6 +555,7 @@ def save_segment_artifacts(
     original_path = segment_dir / "original.jpg"
     mask_path = segment_dir / "mask.png"
     crop_path = segment_dir / "crop.jpg"
+    triposr_crop_path = segment_dir / "triposr_crop.jpg"
     masked_crop_path = segment_dir / "masked_crop.png"
     transparent_crop_path = segment_dir / "transparent_crop.png"
     model_input_path = segment_dir / "model_input.png"
@@ -471,6 +565,7 @@ def save_segment_artifacts(
     pil_image.save(original_path, quality=92)
     full_mask.save(mask_path)
     crop.save(crop_path, quality=92)
+    triposr_crop.save(triposr_crop_path, quality=94)
     masked_crop.save(masked_crop_path)
     transparent_crop.save(transparent_crop_path)
     model_input.save(model_input_path)
@@ -496,6 +591,7 @@ def save_segment_artifacts(
             "original": to_relative_url(original_path),
             "mask": to_relative_url(mask_path),
             "crop": to_relative_url(crop_path),
+            "triposr_crop": to_relative_url(triposr_crop_path),
             "masked_crop": to_relative_url(masked_crop_path),
             "transparent_crop": to_relative_url(transparent_crop_path),
             "model_input": to_relative_url(model_input_path),
@@ -507,76 +603,101 @@ def save_segment_artifacts(
             "original": str(original_path),
             "mask": str(mask_path),
             "crop": str(crop_path),
+            "triposr_crop": str(triposr_crop_path),
             "masked_crop": str(masked_crop_path),
             "transparent_crop": str(transparent_crop_path),
             "model_input": str(model_input_path),
             "model_input_mask": str(model_input_mask_path),
             "overlay": str(overlay_path),
         },
-        "preprocessing": model_input_metadata,
+        "preprocessing": {
+            "legacy_model_input": model_input_metadata,
+            "triposr_input": triposr_crop_metadata,
+        },
     }
     write_json(segment_dir / "segment_summary.json", segment_payload)
-    return segment_payload, model_input_path
+    return segment_payload, triposr_crop_path
 
 
 def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
     try:
-        from src.inference.baseline_inference import predict_pointcloud
-        from src.utils.mesh_export import save_pointcloud_obj
-        from src.utils.pointcloud_io import save_pointcloud_npy, save_pointcloud_ply
-        from src.utils.visualization import plot_point_cloud
+        from src.reconstruction.triposr_runner import TripoSRDependencyError
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Inference dependencies are not ready: {exc}",
+            detail=f"TripoSR core dependencies are not ready: {exc}",
         ) from exc
 
-    output_dir = job_output_dir(MODEL_OUTPUT_DIR, job_id)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     try:
-        points, checkpoint = predict_pointcloud(input_path, BASELINE_CHECKPOINT)
-        npy_path = save_pointcloud_npy(points, output_dir / "pointcloud.npy")
-        ply_path = save_pointcloud_ply(points, output_dir / "pointcloud.ply")
-        obj_path, mesh_summary = save_pointcloud_obj(points, output_dir / "model.obj")
-        preview_path = plot_point_cloud(points, output_dir / "preview.png", title=label or job_id)
+        result = get_triposr_core().reconstruct_image(
+            image_path=input_path,
+            output_dir=MODEL_OUTPUT_DIR,
+            name=job_id,
+            save_preview=TRIPOSR_SAVE_PREVIEW,
+        )
+    except TripoSRDependencyError as exc:
+        raise HTTPException(status_code=503, detail=f"TripoSR dependencies are not ready: {exc}") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Reconstruction failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"TripoSR reconstruction failed: {exc}") from exc
+
+    mesh_format = result.summary.get("mesh", {}).get("format", TRIPOSR_MODEL_SAVE_FORMAT)
+    mesh_url = to_model_url(result.mesh_path)
+    colored_mesh_url = to_model_url(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None
+    textured_mesh_url = to_model_url(result.textured_mesh_obj_path) if result.textured_mesh_obj_path else None
+    texture_url = to_model_url(result.texture_path) if result.texture_path else None
+    preview_url = to_model_url(result.preview_path) if result.preview_path else None
 
     payload = {
         "job_id": job_id,
         "label": label,
-        "output_dir": str(output_dir),
+        "backend": "triposr",
+        "output_dir": str(result.output_dir),
         "input_image": str(input_path),
-        "num_points": int(points.shape[0]),
-        "checkpoint": {
-            "path": str(BASELINE_CHECKPOINT),
-            "model_type": checkpoint.get("model_type"),
-            "encoder_name": checkpoint.get("encoder_name"),
-            "decoder_type": checkpoint.get("decoder_type", "mlp"),
-            "coarse_points": checkpoint.get("coarse_points"),
-            "refine_offset_scale": checkpoint.get("refine_offset_scale"),
-            "num_points": checkpoint.get("num_points"),
+        "num_points": int(result.points.shape[0]),
+        "model": {
+            "name": TRIPOSR_MODEL_NAME_OR_PATH,
+            "type": "triposr",
+            "device": result.summary.get("runtime", {}).get("device"),
+            "remove_background": TRIPOSR_REMOVE_BACKGROUND,
+            "mc_resolution": TRIPOSR_MC_RESOLUTION,
+            "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
+            "bake_texture": TRIPOSR_BAKE_TEXTURE,
         },
-        "mesh": mesh_summary,
+        "mesh": result.summary.get("mesh", {}),
+        "texture_baking": result.summary.get("texture_baking", {}),
         "files": {
-            "pointcloud_npy": to_model_url(npy_path),
-            "pointcloud_ply": to_model_url(ply_path),
-            "mesh_obj": to_model_url(obj_path),
-            "preview_png": to_model_url(preview_path),
-            "summary_json": to_model_url(output_dir / "reconstruction_summary.json"),
+            "input_image": to_model_url(result.input_path),
+            "triposr_input": to_model_url(result.processed_input_path),
+            "pointcloud_npy": to_model_url(result.pointcloud_npy_path),
+            "pointcloud_ply": to_model_url(result.pointcloud_ply_path),
+            "mesh": mesh_url,
+            "mesh_glb": mesh_url if mesh_format == "glb" else None,
+            "mesh_obj": mesh_url if mesh_format == "obj" else None,
+            "mesh_colored_ply": colored_mesh_url,
+            "mesh_textured_obj": textured_mesh_url,
+            "texture_png": texture_url,
+            "preview_png": preview_url,
+            "summary_json": to_model_url(result.output_dir / "reconstruction_summary.json"),
+            "triposr_summary_json": to_model_url(result.summary_path),
         },
         "paths": {
-            "output_dir": str(output_dir),
+            "output_dir": str(result.output_dir),
             "input_image": str(input_path),
-            "pointcloud_npy": str(npy_path),
-            "pointcloud_ply": str(ply_path),
-            "mesh_obj": str(obj_path),
-            "preview_png": str(preview_path),
-            "summary_json": str(output_dir / "reconstruction_summary.json"),
+            "triposr_input": str(result.processed_input_path),
+            "pointcloud_npy": str(result.pointcloud_npy_path),
+            "pointcloud_ply": str(result.pointcloud_ply_path),
+            "mesh": str(result.mesh_path),
+            "mesh_glb": str(result.mesh_path) if mesh_format == "glb" else None,
+            "mesh_obj": str(result.mesh_path) if mesh_format == "obj" else None,
+            "mesh_colored_ply": str(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None,
+            "mesh_textured_obj": str(result.textured_mesh_obj_path) if result.textured_mesh_obj_path else None,
+            "texture_png": str(result.texture_path) if result.texture_path else None,
+            "preview_png": str(result.preview_path) if result.preview_path else None,
+            "summary_json": str(result.output_dir / "reconstruction_summary.json"),
+            "triposr_summary_json": str(result.summary_path),
         },
     }
-    write_json(output_dir / "reconstruction_summary.json", payload)
+    write_json(result.output_dir / "reconstruction_summary.json", payload)
     return payload
 
 
@@ -602,8 +723,6 @@ def warmup_yolo_model():
 def health_check():
     return {
         "status": "ok",
-        "baseline_checkpoint_exists": BASELINE_CHECKPOINT.is_file(),
-        "baseline_checkpoint": str(BASELINE_CHECKPOINT),
         "yolo_weights_exists": YOLO_WEIGHTS.is_file(),
         "yolo_device": get_yolo_device(),
         "detector": {
@@ -612,12 +731,26 @@ def health_check():
             "max_det": DETECTION_MAX_OBJECTS,
             "iou": DETECTION_IOU,
         },
+        "reconstruction": {
+            "backend": "triposr",
+            "model_name_or_path": TRIPOSR_MODEL_NAME_OR_PATH,
+            "repo_dir": TRIPOSR_REPO_DIR,
+            "device": TRIPOSR_DEVICE,
+            "loaded": _triposr_core is not None,
+            "remove_background": TRIPOSR_REMOVE_BACKGROUND,
+            "mc_resolution": TRIPOSR_MC_RESOLUTION,
+            "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
+            "num_points": TRIPOSR_NUM_POINTS,
+            "model_save_format": TRIPOSR_MODEL_SAVE_FORMAT,
+            "bake_texture": TRIPOSR_BAKE_TEXTURE,
+            "texture_resolution": TRIPOSR_TEXTURE_RESOLUTION,
+        },
         "reconstruction_preprocess": {
-            "image_size": MODEL_INPUT_IMAGE_SIZE,
-            "margin_ratio": MODEL_INPUT_MARGIN_RATIO,
-            "min_margin_px": MODEL_INPUT_MIN_MARGIN_PX,
-            "segmented_mode": "segmented_mask_crop_square_pad",
-            "plain_mode": "plain_square_pad",
+            "segmented_mode": "yolo_bbox_crop_for_triposr_rembg",
+            "crop_margin_ratio": TRIPOSR_CROP_MARGIN_RATIO,
+            "crop_min_margin_px": TRIPOSR_CROP_MIN_MARGIN_PX,
+            "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
+            "legacy_mask_artifacts": True,
         },
         "outputs": {
             "segment_outputs": "/segment-outputs",
@@ -774,12 +907,6 @@ async def reconstruct_object(
     bbox_height: float | None = Form(default=None),
 ):
     started_at = time.perf_counter()
-    if not BASELINE_CHECKPOINT.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
-        )
-
     pil_image = await read_upload_image(image)
     result, selected_detection, detections = detect_and_select_object(
         pil_image,
@@ -791,14 +918,14 @@ async def reconstruct_object(
     )
 
     job_id = build_job_id(selected_detection["label"])
-    segment_payload, masked_crop_path = save_segment_artifacts(
+    segment_payload, triposr_crop_path = save_segment_artifacts(
         pil_image=pil_image,
         result=result,
         selected_detection=selected_detection,
         job_id=job_id,
     )
     reconstruction = save_reconstruction_artifacts(
-        masked_crop_path,
+        triposr_crop_path,
         job_id,
         label=selected_detection["label"],
     )
@@ -825,12 +952,6 @@ async def reconstruct_object(
 
 @app.post("/reconstruct-image")
 async def reconstruct_image(image: UploadFile = File(...)):
-    if not BASELINE_CHECKPOINT.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Baseline checkpoint not found: {BASELINE_CHECKPOINT}",
-        )
-
     filename = image.filename or "input.jpg"
     suffix = Path(filename).suffix or ".jpg"
     job_id = build_job_id(Path(filename).stem or "image")
@@ -842,23 +963,35 @@ async def reconstruct_image(image: UploadFile = File(...)):
         pil_image.save(input_path, quality=92)
     else:
         pil_image.save(input_path)
-    model_input, preprocess_metadata = build_plain_model_input(pil_image)
-    model_input_path = upload_dir / "model_input.png"
-    model_input.save(model_input_path)
 
-    reconstruction = save_reconstruction_artifacts(model_input_path, job_id, label=Path(filename).stem or "image")
+    reconstruction = save_reconstruction_artifacts(input_path, job_id, label=Path(filename).stem or "image")
 
     return {
         "job_id": job_id,
         "status": "done",
+        "backend": reconstruction["backend"],
         "num_points": reconstruction["num_points"],
-        "preprocessing": preprocess_metadata,
+        "preprocessing": {
+            "mode": "triposr_direct_image",
+            "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
+        },
         "input_path": str(input_path),
-        "model_input_path": str(model_input_path),
+        "triposr_input_path": reconstruction["paths"]["triposr_input"],
         "pointcloud_npy": reconstruction["paths"]["pointcloud_npy"],
         "pointcloud_ply": reconstruction["paths"]["pointcloud_ply"],
+        "mesh": reconstruction["paths"]["mesh"],
+        "mesh_glb": reconstruction["paths"]["mesh_glb"],
         "mesh_obj": reconstruction["paths"]["mesh_obj"],
+        "mesh_colored_ply": reconstruction["paths"]["mesh_colored_ply"],
+        "mesh_textured_obj": reconstruction["paths"]["mesh_textured_obj"],
+        "texture_png": reconstruction["paths"]["texture_png"],
         "preview_png": reconstruction["paths"]["preview_png"],
+        "model_url": (
+            reconstruction["files"].get("mesh_glb")
+            or reconstruction["files"].get("mesh")
+            or reconstruction["files"].get("mesh_obj")
+        ),
         "files": reconstruction["files"],
-        "mesh": reconstruction["mesh"],
+        "mesh_summary": reconstruction["mesh"],
+        "reconstruction": reconstruction,
     }

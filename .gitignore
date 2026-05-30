@@ -2,6 +2,8 @@
 
 # dependencies
 node_modules/
+mobile/node_modules/
+mobile/.npm-cache/
 
 venv/
 __pycache__/
@@ -9,11 +11,15 @@ __pycache__/
 data/raw/
 project/data/raw/
 .cache/
+.codex_doc_review/
 
 # Expo
 .expo/
+mobile/.expo/
 dist/
 web-build/
+mobile/dist/
+mobile/web-build/
 expo-env.d.ts
 
 # Native
@@ -32,14 +38,20 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.log
+mobile/expo-web.log
+mobile/expo-web.err
 
 # macOS
 .DS_Store
 *.pem
 
 # local env files
+.env
+tester/.env
 .env*.local
 .venv/
+.venv*/
 server/uploads/
 server/models/
 server/smoke_outputs/
@@ -48,6 +60,22 @@ project/results/
 project/results/training/
 project/results/inference/
 project/results/week2_eda/
+project/external/
+project/train_log.txt
+
+# generated datasets and model artifacts
+project/data/processed/
+project/data/processed_*/
+project/data/**/*.npy
+project/data/**/*.npy.json
+project/data/**/*.ply
+project/data/**/*.obj
+project/data/**/*.png
+project/data/**/*.jpg
+project/data/**/*.jpeg
+project/data/**/*.mat
+project/data/**/*.csv
+server/**/*.pt
 
 # typescript
 *.tsbuildinfo
