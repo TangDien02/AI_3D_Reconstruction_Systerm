@@ -130,7 +130,42 @@ class TripoSRRunnerTests(unittest.TestCase):
             summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["backend"], "triposr")
             self.assertEqual(summary["num_points"], 64)
+            self.assertEqual(summary["mesh"]["format"], "obj")
+            self.assertEqual(summary["mesh"]["vertices"], 4)
+            self.assertEqual(summary["mesh"]["faces"], 4)
             self.assertEqual(summary["paths"]["mesh"], str(result.mesh_path))
+
+    def test_texture_baking_failure_is_recorded_without_breaking_core_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            image_path = temp_path / "object.png"
+            Image.new("RGB", (48, 32), (120, 80, 40)).save(image_path)
+
+            config = TripoSRConfig(
+                device="cpu",
+                remove_background=False,
+                num_points=64,
+                mc_resolution=32,
+                model_save_format="obj",
+                bake_texture=True,
+                texture_resolution=32,
+            )
+            result = TripoSRCore(config=config, model=FakeTripoSRModel()).reconstruct_image(
+                image_path=image_path,
+                output_dir=temp_path / "outputs",
+                name="sample",
+                save_preview=False,
+            )
+
+            self.assertTrue(result.mesh_path.is_file())
+            self.assertTrue(result.pointcloud_ply_path.is_file())
+            self.assertIsNone(result.textured_mesh_obj_path)
+            self.assertIsNone(result.texture_path)
+
+            summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+            self.assertTrue(summary["texture_baking"]["enabled"])
+            self.assertFalse(summary["texture_baking"]["success"])
+            self.assertIsInstance(summary["texture_baking"]["error"], str)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,9 @@ class TripoSRConfig:
     model_save_format: str = "obj"
     normalize_points: bool = True
     seed: int | None = 42
+    bake_texture: bool = False
+    texture_resolution: int = 1024
+    texture_padding: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,8 @@ class TripoSRResult:
     processed_input_path: Path
     mesh_path: Path
     colored_mesh_ply_path: Path | None
+    textured_mesh_obj_path: Path | None
+    texture_path: Path | None
     pointcloud_npy_path: Path
     pointcloud_ply_path: Path
     preview_path: Path | None
@@ -337,10 +342,37 @@ class TripoSRCore:
         if not meshes:
             raise RuntimeError("TripoSR returned no mesh.")
         mesh = meshes[0]
+        mesh_vertex_count = int(len(getattr(mesh, "vertices", [])))
+        mesh_face_count = int(len(getattr(mesh, "faces", [])))
+        vertex_colors = getattr(getattr(mesh, "visual", None), "vertex_colors", None)
+        has_vertex_colors = _as_uint8_colors(vertex_colors, mesh_vertex_count) is not None
 
         mesh_path = sample_dir / f"mesh.{self.config.model_save_format}"
         mesh.export(mesh_path)
         colored_mesh_ply_path = save_colored_mesh_ply(mesh, sample_dir / "mesh_colored.ply")
+        textured_mesh_obj_path = None
+        texture_path = None
+        texture_error = None
+        if self.config.bake_texture:
+            try:
+                from src.reconstruction.texture_baker import bake_texture, export_textured_obj
+
+                baked_texture = bake_texture(
+                    mesh=mesh,
+                    model=self.model,
+                    scene_code=scene_codes[0],
+                    texture_resolution=self.config.texture_resolution,
+                    texture_padding=self.config.texture_padding,
+                )
+                textured_export = export_textured_obj(
+                    mesh=mesh,
+                    baked_texture=baked_texture,
+                    output_path=sample_dir / "mesh_textured.obj",
+                )
+                textured_mesh_obj_path = textured_export.obj_path
+                texture_path = textured_export.texture_path
+            except Exception as exc:
+                texture_error = str(exc)
 
         points = sample_points_from_mesh(
             mesh,
@@ -364,6 +396,13 @@ class TripoSRCore:
             "output_dir": str(sample_dir),
             "num_points": int(points.shape[0]),
             "points_normalized": bool(self.config.normalize_points),
+            "mesh": {
+                "format": self.config.model_save_format,
+                "vertices": mesh_vertex_count,
+                "faces": mesh_face_count,
+                "has_vertex_colors": has_vertex_colors,
+                "colored_mesh_ply": colored_mesh_ply_path is not None,
+            },
             "config": asdict(self.config),
             "runtime": {
                 "device": self.device,
@@ -374,9 +413,16 @@ class TripoSRCore:
                 "processed_input": str(processed_input_path),
                 "mesh": str(mesh_path),
                 "colored_mesh_ply": str(colored_mesh_ply_path) if colored_mesh_ply_path else None,
+                "textured_mesh_obj": str(textured_mesh_obj_path) if textured_mesh_obj_path else None,
+                "texture_png": str(texture_path) if texture_path else None,
                 "pointcloud_npy": str(npy_path),
                 "pointcloud_ply": str(ply_path),
                 "preview_png": str(preview_path) if preview_path else None,
+            },
+            "texture_baking": {
+                "enabled": bool(self.config.bake_texture),
+                "success": bool(textured_mesh_obj_path and texture_path),
+                "error": texture_error,
             },
         }
         summary_path = _write_json(sample_dir / "triposr_summary.json", summary)
@@ -387,6 +433,8 @@ class TripoSRCore:
             processed_input_path=processed_input_path,
             mesh_path=mesh_path,
             colored_mesh_ply_path=colored_mesh_ply_path,
+            textured_mesh_obj_path=textured_mesh_obj_path,
+            texture_path=texture_path,
             pointcloud_npy_path=npy_path,
             pointcloud_ply_path=ply_path,
             preview_path=preview_path,
@@ -428,6 +476,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.set_defaults(remove_background=True)
     parser.add_argument("--no-normalize-points", dest="normalize_points", action="store_false")
     parser.set_defaults(normalize_points=True)
+    parser.add_argument("--bake-texture", action="store_true", help="Bake TripoSR colors into a UV texture atlas.")
+    parser.add_argument("--texture-resolution", type=int, default=1024)
+    parser.add_argument("--texture-padding", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-preview", dest="save_preview", action="store_false")
     parser.set_defaults(save_preview=True)
@@ -451,6 +502,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         model_save_format=args.model_save_format,
         normalize_points=args.normalize_points,
         seed=args.seed,
+        bake_texture=args.bake_texture,
+        texture_resolution=args.texture_resolution,
+        texture_padding=args.texture_padding,
     )
     core = TripoSRCore(config=config)
     results = []

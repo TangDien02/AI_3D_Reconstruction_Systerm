@@ -22,8 +22,8 @@ const RECON_CAPTURE_QUALITY = 0.92;
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
   'YOLO phat hien va crop vat the',
-  'ResNet reconstruct point cloud',
-  'Export PLY va OBJ mesh',
+  'TripoSR tu tach nen va reconstruct mesh',
+  'Export GLB, colored PLY va point cloud',
 ];
 
 export default function App() {
@@ -245,7 +245,7 @@ export default function App() {
     setSelectedDetectionSize(detectedImageSize);
     setSegmentResult(null);
     setReconstructionResult(null);
-    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de chup full-res va reconstruct 3D.`);
+    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de chup full-res va chay TripoSR.`);
   };
 
   const reconstructSelectedObject = async () => {
@@ -282,7 +282,7 @@ export default function App() {
       const scaledBbox = scaleBboxToImage(selectedObject.bbox, sourceSize, targetSize);
 
       setSelectedFrameUri(reconstructionPhoto.uri);
-      setCameraStatus('Dang YOLO crop full-res + ResNet reconstruct + export OBJ...');
+      setCameraStatus('Dang YOLO crop full-res + TripoSR reconstruct + export GLB...');
 
       const formData = new FormData();
       formData.append('image', {
@@ -308,7 +308,7 @@ export default function App() {
       const payload = await response.json();
       setSegmentResult(payload.segmentation || null);
       setReconstructionResult(payload.reconstruction || null);
-      setCameraStatus(`Da reconstruct ${payload.selected?.label || selectedObject.label}. OBJ san sang.`);
+      setCameraStatus(`Da reconstruct ${payload.selected?.label || selectedObject.label}. GLB san sang.`);
     } catch (error) {
       setSegmentResult(null);
       setReconstructionResult(null);
@@ -410,6 +410,32 @@ export default function App() {
     );
   };
 
+  const segmentPreviewPath = (
+    segmentResult?.files?.triposr_crop
+    || segmentResult?.files?.crop
+    || segmentResult?.files?.masked_crop
+  );
+  const meshFilePath = (
+    reconstructionResult?.files?.mesh_glb
+    || reconstructionResult?.files?.mesh_obj
+    || reconstructionResult?.files?.mesh
+  );
+  const meshFileLabel = reconstructionResult?.files?.mesh_glb
+    ? 'GLB'
+    : reconstructionResult?.files?.mesh_obj
+      ? 'OBJ'
+      : 'MESH';
+  const coloredMeshPath = reconstructionResult?.files?.mesh_colored_ply;
+  const pointCloudPath = reconstructionResult?.files?.pointcloud_ply;
+  const triposrInputPath = reconstructionResult?.files?.triposr_input;
+  const meshSummary = reconstructionResult?.mesh || {};
+  const openServerFile = (path) => {
+    const url = getServerFileUrl(path);
+    if (url) {
+      Linking.openURL(url);
+    }
+  };
+
   if (screen === 'camera') {
     return (
       <View
@@ -464,39 +490,61 @@ export default function App() {
                 Da chon: {selectedObject.label} {Math.round((selectedObject.confidence || 0) * 100)}%
               </Text>
             )}
-            {segmentResult?.files?.masked_crop && (
+            {segmentPreviewPath && (
               <View style={styles.segmentPreview}>
                 <Image
-                  source={{ uri: getServerFileUrl(segmentResult.files.masked_crop) }}
+                  source={{ uri: getServerFileUrl(segmentPreviewPath) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>Masked crop da dua vao ResNet.</Text>
+                <Text style={styles.segmentPreviewText}>YOLO bbox crop gui sang TripoSR.</Text>
               </View>
             )}
-            {reconstructionResult?.files?.preview_png && (
+            {reconstructionResult && (reconstructionResult.files?.preview_png || meshFilePath) && (
               <View style={styles.reconstructionPanel}>
-                <Image
-                  source={{ uri: getServerFileUrl(reconstructionResult.files.preview_png) }}
-                  style={styles.reconstructionPreviewImage}
-                />
+                {reconstructionResult.files?.preview_png && (
+                  <Image
+                    source={{ uri: getServerFileUrl(reconstructionResult.files.preview_png) }}
+                    style={styles.reconstructionPreviewImage}
+                  />
+                )}
                 <View style={styles.reconstructionInfo}>
-                  <Text style={styles.reconstructionTitle}>OBJ model ready</Text>
+                  <Text style={styles.reconstructionTitle}>TripoSR mesh ready</Text>
                   <Text style={styles.reconstructionText}>
-                    {reconstructionResult.num_points || 0} points -> {reconstructionResult.mesh?.faces || 0} faces
+                    {reconstructionResult.num_points || 0} pts -> {meshSummary.vertices || 0} verts / {meshSummary.faces || 0} faces
                   </Text>
                   <View style={styles.linkRow}>
-                    <Pressable
-                      style={styles.fileLink}
-                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.mesh_obj))}
-                    >
-                      <Text style={styles.fileLinkText}>OBJ</Text>
-                    </Pressable>
-                    <Pressable
-                      style={styles.fileLink}
-                      onPress={() => Linking.openURL(getServerFileUrl(reconstructionResult.files.pointcloud_ply))}
-                    >
-                      <Text style={styles.fileLinkText}>PLY</Text>
-                    </Pressable>
+                    {meshFilePath && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => openServerFile(meshFilePath)}
+                      >
+                        <Text style={styles.fileLinkText}>{meshFileLabel}</Text>
+                      </Pressable>
+                    )}
+                    {coloredMeshPath && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => openServerFile(coloredMeshPath)}
+                      >
+                        <Text style={styles.fileLinkText}>Color PLY</Text>
+                      </Pressable>
+                    )}
+                    {pointCloudPath && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => openServerFile(pointCloudPath)}
+                      >
+                        <Text style={styles.fileLinkText}>Point PLY</Text>
+                      </Pressable>
+                    )}
+                    {triposrInputPath && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={() => openServerFile(triposrInputPath)}
+                      >
+                        <Text style={styles.fileLinkText}>Input</Text>
+                      </Pressable>
+                    )}
                   </View>
                 </View>
               </View>
@@ -541,8 +589,8 @@ export default function App() {
         <View style={styles.permissionCard}>
           <Text style={styles.permissionTitle}>Cần quyền camera</Text>
           <Text style={styles.permissionText}>
-            Ứng dụng cần quyền camera để quét object, gửi YOLO crop về backend và tái tạo
-            point cloud / OBJ bằng checkpoint ResNet.
+            Ung dung can quyen camera de quet object, gui YOLO bbox ve backend va tai tao
+            mesh / point cloud bang TripoSR.
           </Text>
           <Pressable style={styles.primaryButton} onPress={openCamera}>
             <Text style={styles.primaryButtonText}>Cho phép camera</Text>
@@ -569,8 +617,8 @@ export default function App() {
         <View style={styles.heroBlock}>
           <Text style={styles.title}>Quét vật thể và tái tạo mô hình 3D</Text>
           <Text style={styles.subtitle}>
-            Camera mobile detect object liên tục, chọn bbox, gửi ảnh sang backend để YOLO crop,
-            ResNet reconstruct point cloud và export file OBJ.
+            Camera mobile detect object lien tuc, chon bbox, gui anh sang backend de YOLO crop,
+            TripoSR tu tach nen, reconstruct mesh va export GLB / colored PLY.
           </Text>
         </View>
 
@@ -589,8 +637,8 @@ export default function App() {
         <View style={styles.noteBox}>
           <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
           <Text style={styles.noteText}>
-            Đã nối camera mobile với backend. Để chạy reconstruction thật, backend cần checkpoint
-            ResNet hợp lệ ở cấu hình RECON_BASELINE_CHECKPOINT hoặc output mặc định.
+            Backend dang dung TripoSR. YOLO chi chon bbox va crop vat the; TripoSR xu ly nen,
+            dung mesh GLB va xuat colored PLY de kiem tra mau sac trong Blender.
           </Text>
         </View>
       </View>

@@ -16,6 +16,7 @@ scikit-image
 # Optional for automatic background removal. Install this if you want to run
 # without --no-remove-bg.
 rembg
+onnxruntime
 
 # Optional native marching-cubes backend. This is faster than the bundled
 # scikit-image fallback but requires C++ build tools on Windows.

@@ -4,6 +4,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger("BaselinePipeline")
 
+# Legacy template-matching baseline kept for comparison. New image-to-3D
+# orchestration should use src.pipeline.sequential_3d_pipeline.
+
 class BaselinePipeline:
     def __init__(self, template_db):
         self.preprocessor = ImagePreprocessor()

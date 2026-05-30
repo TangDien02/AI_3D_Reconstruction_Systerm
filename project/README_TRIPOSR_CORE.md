@@ -1,7 +1,14 @@
 # TripoSR Core
 
-This branch replaces the project core reconstruction path with TripoSR for local
-core testing. The backend and frontend are intentionally not connected yet.
+This is the main reconstruction spine for the project:
+
+```text
+single object image -> TripoSR mesh -> sampled point cloud -> artifact summary
+```
+
+The FastAPI backend now calls this runner for `/reconstruct-image` and
+`/reconstruct-object`. The mobile app talks to those endpoints. Legacy
+ResNet/point-cloud training code remains for comparison only.
 
 ## Install
 
@@ -50,7 +57,8 @@ Each input creates:
 results/triposr_core/<image_stem>/
   input.<ext>
   triposr_input.png
-  mesh.obj
+  mesh.obj or mesh.glb
+  mesh_colored.ply
   pointcloud.npy
   pointcloud.ply
   preview.png
@@ -65,8 +73,13 @@ The core output is mesh-first:
 image -> TripoSR -> mesh -> sampled point cloud
 ```
 
-`pointcloud.npy` and `pointcloud.ply` are still exported so evaluation and the
-future backend bridge can keep the existing point-cloud contract.
+`pointcloud.npy` and `pointcloud.ply` are still exported so old evaluation and
+debug scripts can keep the existing point-cloud contract. The real core output
+is the mesh.
+
+Optional texture baking is available behind `--bake-texture`. It is off by
+default because it requires OpenGL/xatlas runtime support and is not needed for
+the basic TripoSR contract.
 
 ## Local Test Without Downloading TripoSR Weights
 
