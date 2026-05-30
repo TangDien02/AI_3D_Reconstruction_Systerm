@@ -3,8 +3,10 @@ import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
+  Alert,
   Image,
   Linking,
+  Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -19,12 +21,26 @@ const DETECT_UPLOAD_COMPRESS = 0.65;
 const DETECT_COOLDOWN_MS = 350;
 const DETECT_EMPTY_HOLD_MS = 900;
 const RECON_CAPTURE_QUALITY = 0.92;
+const AR_MODEL_TITLE = 'Recon 3D Model';
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
   'YOLO phat hien va crop vat the',
   'TripoSR tu tach nen va reconstruct mesh',
   'Export GLB, colored PLY va point cloud',
 ];
+
+const buildAndroidSceneViewerUrl = (modelUrl, title = AR_MODEL_TITLE) => {
+  const encodedModelUrl = encodeURIComponent(modelUrl);
+  const encodedFallbackUrl = encodeURIComponent(modelUrl);
+  const encodedTitle = encodeURIComponent(title);
+
+  return (
+    `intent://arvr.google.com/scene-viewer/1.0?file=${encodedModelUrl}`
+    + `&mode=ar_preferred&title=${encodedTitle}`
+    + '#Intent;scheme=https;package=com.google.android.googlequicksearchbox;'
+    + `action=android.intent.action.VIEW;S.browser_fallback_url=${encodedFallbackUrl};end;`
+  );
+};
 
 export default function App() {
   const cameraRef = useRef(null);
@@ -428,11 +444,50 @@ export default function App() {
   const coloredMeshPath = reconstructionResult?.files?.mesh_colored_ply;
   const pointCloudPath = reconstructionResult?.files?.pointcloud_ply;
   const triposrInputPath = reconstructionResult?.files?.triposr_input;
+  const arGlbPath = reconstructionResult?.files?.mesh_glb;
+  const arUsdzPath = (
+    reconstructionResult?.files?.mesh_usdz
+    || reconstructionResult?.files?.ar_usdz
+    || reconstructionResult?.files?.usdz
+  );
   const meshSummary = reconstructionResult?.mesh || {};
   const openServerFile = (path) => {
     const url = getServerFileUrl(path);
     if (url) {
       Linking.openURL(url);
+    }
+  };
+  const openArPreview = async () => {
+    const glbUrl = getServerFileUrl(arGlbPath);
+    const usdzUrl = getServerFileUrl(arUsdzPath);
+
+    try {
+      if (Platform.OS === 'android' && glbUrl) {
+        await Linking.openURL(buildAndroidSceneViewerUrl(glbUrl, selectedObject?.label || AR_MODEL_TITLE));
+        return;
+      }
+
+      if (Platform.OS === 'ios' && usdzUrl) {
+        await Linking.openURL(usdzUrl);
+        return;
+      }
+
+      if (Platform.OS === 'ios') {
+        Alert.alert(
+          'AR chua san sang',
+          'iOS Quick Look can file USDZ. Backend hien moi xuat GLB, can them buoc convert GLB sang USDZ.',
+        );
+        return;
+      }
+
+      if (glbUrl) {
+        await Linking.openURL(glbUrl);
+        return;
+      }
+
+      Alert.alert('AR chua san sang', 'Chua co file GLB hoac USDZ de mo AR.');
+    } catch (error) {
+      Alert.alert('Khong mo duoc AR', error.message);
     }
   };
 
@@ -519,6 +574,14 @@ export default function App() {
                         onPress={() => openServerFile(meshFilePath)}
                       >
                         <Text style={styles.fileLinkText}>{meshFileLabel}</Text>
+                      </Pressable>
+                    )}
+                    {(arGlbPath || arUsdzPath) && (
+                      <Pressable
+                        style={styles.fileLink}
+                        onPress={openArPreview}
+                      >
+                        <Text style={styles.fileLinkText}>AR</Text>
                       </Pressable>
                     )}
                     {coloredMeshPath && (
