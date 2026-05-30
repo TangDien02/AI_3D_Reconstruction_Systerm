@@ -506,14 +506,14 @@ def main() -> None:
             raise ValueError("--triposr-dir bắt buộc khi dùng --manifest")
 
         samples = _find_samples_from_manifest(manifest_path, triposr_dir, processed_dir)
-        print(f"Manifest: {manifest_path} → {len(samples)} samples matched.")
+        print(f"Manifest: {manifest_path} -> {len(samples)} samples matched.")
 
     elif args.triposr_dir:
         triposr_dir = Path(args.triposr_dir)
         if not triposr_dir.is_absolute():
             triposr_dir = PROJECT_DIR / triposr_dir
         samples = _find_triposr_samples(triposr_dir)
-        print(f"TripoSR dir: {triposr_dir} → {len(samples)} samples found.")
+        print(f"TripoSR dir: {triposr_dir} -> {len(samples)} samples found.")
 
     else:
         print("Lỗi: cần ít nhất một trong: (--mesh + --image), --triposr-dir, hoặc --manifest")
