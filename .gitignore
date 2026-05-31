@@ -1,79 +1,39 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
-node_modules/
-
+.venv/
+.venv*/
 venv/
 __pycache__/
 *.pyc
-data/raw/
-project/data/raw/
-.cache/
+*.pyo
+*.pyd
 
-# Expo
+node_modules/
 .expo/
 dist/
 web-build/
-expo-env.d.ts
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
+.DS_Store
+.vscode/
 npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-# macOS
-.DS_Store
-*.pem
-
-# local env files
+.env.local
 .env*.local
-.venv/
-.venv*/
+
 server/uploads/
 server/models/
-server/smoke_outputs/
 server/segment_outputs/
+server/smoke_outputs/
+
 project/results/
-project/results/training/
-project/results/inference/
-project/results/week2_eda/
-project/external/
+project/data/raw/
 
-# typescript
-*.tsbuildinfo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
 
-# generated native folders
-/ios
-/android
+project/.venv-gpu/
+project/.venv-triposr/
+project/.venv/
 
-.vscode/
-
-project/data/processed/images/
-project/data/processed/masks/
-project/data/processed/points/
-
-project/results/baseline/
-project/results/eda/
-project/results/logs/
-project/results/metrics/
-project/results/**/outputs/checkpoints/*.pt
-project/results/**/outputs/checkpoints/*.pth
-
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-
-# Word temporary lock files
 ~$*.docx

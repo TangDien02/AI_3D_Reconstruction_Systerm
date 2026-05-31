@@ -1,0 +1,22 @@
+# Runtime dependencies for the mobile -> backend -> YOLO -> TripoSR pipeline.
+# Supported interpreter: Python 3.11.x
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+python-multipart==0.0.29
+numpy<2
+pillow==10.1.0
+matplotlib==3.10.9
+torch==2.7.0
+torchvision==0.22.0
+ultralytics==8.4.58
+trimesh==4.0.5
+omegaconf==2.3.0
+einops==0.7.0
+transformers==4.35.0
+huggingface-hub==0.17.3
+imageio[ffmpeg]==2.37.3
+xatlas==0.0.9
+moderngl==5.10.0
+scikit-image==0.25.2
+rembg==2.0.67
+onnxruntime==1.22.1

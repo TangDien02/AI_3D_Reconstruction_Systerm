@@ -5,8 +5,10 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import time
+import subprocess
 from datetime import datetime
 from threading import Lock
 import uuid
@@ -78,6 +80,9 @@ TRIPOSR_REMOVE_BACKGROUND = env_bool("TRIPOSR_REMOVE_BACKGROUND", True)
 TRIPOSR_SAVE_PREVIEW = env_bool("TRIPOSR_SAVE_PREVIEW", True)
 TRIPOSR_CROP_MARGIN_RATIO = env_float("TRIPOSR_CROP_MARGIN_RATIO", 0.16)
 TRIPOSR_CROP_MIN_MARGIN_PX = env_int("TRIPOSR_CROP_MIN_MARGIN_PX", 16)
+AR_USDZ_ENABLED = env_bool("AR_USDZ_ENABLED", True)
+AR_USDZ_TIMEOUT_SECONDS = env_int("AR_USDZ_TIMEOUT_SECONDS", 180)
+BLENDER_PATH = os.environ.get("BLENDER_PATH")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SEGMENT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -307,6 +312,114 @@ def write_json(path: Path, payload: dict) -> Path:
     return path
 
 
+def find_blender_executable() -> Path | None:
+    candidates = []
+    if BLENDER_PATH:
+        candidates.append(Path(BLENDER_PATH))
+
+    blender_on_path = shutil.which("blender")
+    if blender_on_path:
+        candidates.append(Path(blender_on_path))
+
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        root = os.environ.get(env_name)
+        if not root:
+            continue
+        blender_root = Path(root) / "Blender Foundation"
+        if blender_root.is_dir():
+            candidates.extend(sorted(blender_root.glob("Blender*\\blender.exe"), reverse=True))
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def convert_glb_to_usdz(glb_path: Path) -> tuple[Path | None, dict]:
+    status = {
+        "enabled": AR_USDZ_ENABLED,
+        "format": "usdz",
+        "source": str(glb_path),
+        "converter": "blender",
+        "converted": False,
+    }
+    if not AR_USDZ_ENABLED:
+        status["reason"] = "disabled"
+        return None, status
+    if glb_path.suffix.lower() != ".glb" or not glb_path.is_file():
+        status["reason"] = "requires_existing_glb"
+        return None, status
+
+    blender_path = find_blender_executable()
+    if blender_path is None:
+        status["reason"] = "blender_not_found"
+        status["hint"] = "Set BLENDER_PATH to blender.exe to enable iOS USDZ AR export."
+        return None, status
+
+    usdz_path = glb_path.with_suffix(".usdz")
+    script_path = glb_path.parent / "_convert_glb_to_usdz.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "from pathlib import Path",
+                "import bpy",
+                "input_path = sys.argv[-2]",
+                "output_path = sys.argv[-1]",
+                "bpy.ops.object.select_all(action='SELECT')",
+                "bpy.ops.object.delete()",
+                "bpy.ops.import_scene.gltf(filepath=input_path)",
+                "props = bpy.ops.wm.usd_export.get_rna_type().properties.keys()",
+                "kwargs = {'filepath': output_path}",
+                "if 'export_textures' in props:",
+                "    kwargs['export_textures'] = True",
+                "if 'export_materials' in props:",
+                "    kwargs['export_materials'] = True",
+                "bpy.ops.wm.usd_export(**kwargs)",
+                "if not Path(output_path).is_file():",
+                "    raise RuntimeError(f'USDZ export did not create {output_path}')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command = [
+        str(blender_path),
+        "--background",
+        "--factory-startup",
+        "--python",
+        str(script_path),
+        "--",
+        str(glb_path),
+        str(usdz_path),
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=AR_USDZ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        status["reason"] = "timeout"
+        status["blender_path"] = str(blender_path)
+        return None, status
+
+    status["blender_path"] = str(blender_path)
+    status["returncode"] = completed.returncode
+    if completed.returncode != 0 or not usdz_path.is_file():
+        status["reason"] = "conversion_failed"
+        status["stderr"] = completed.stderr[-2000:]
+        status["stdout"] = completed.stdout[-2000:]
+        return None, status
+
+    status["converted"] = True
+    status["path"] = str(usdz_path)
+    return usdz_path, status
+
+
 async def read_upload_image(image: UploadFile) -> Image.Image:
     image_bytes = await image.read()
     if not image_bytes:
@@ -493,21 +606,6 @@ def build_triposr_crop_input(
     return crop, metadata
 
 
-def build_plain_model_input(pil_image: Image.Image) -> tuple[Image.Image, dict]:
-    padded_image, padding = square_pad_image(pil_image.convert("RGB"), fill=(255, 255, 255))
-    model_input = padded_image.resize(
-        (MODEL_INPUT_IMAGE_SIZE, MODEL_INPUT_IMAGE_SIZE),
-        Image.Resampling.BILINEAR,
-    )
-    metadata = {
-        "mode": "plain_square_pad",
-        "image_size": MODEL_INPUT_IMAGE_SIZE,
-        "background": "white",
-        "square_padding": padding,
-    }
-    return model_input, metadata
-
-
 def save_segment_artifacts(
     pil_image: Image.Image,
     result,
@@ -636,6 +734,16 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
     mesh_url = to_model_url(result.mesh_path)
     colored_mesh_url = to_model_url(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None
     preview_url = to_model_url(result.preview_path) if result.preview_path else None
+    mesh_usdz_path, mesh_usdz_status = convert_glb_to_usdz(result.mesh_path) if mesh_format == "glb" else (
+        None,
+        {
+            "enabled": AR_USDZ_ENABLED,
+            "format": "usdz",
+            "converted": False,
+            "reason": "requires_glb_export",
+        },
+    )
+    mesh_usdz_url = to_model_url(mesh_usdz_path) if mesh_usdz_path else None
 
     payload = {
         "job_id": job_id,
@@ -653,6 +761,19 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
             "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
         },
         "mesh": result.summary.get("mesh", {}),
+        "ar": {
+            "android": {
+                "format": "glb",
+                "viewer": "scene_viewer",
+                "ready": mesh_format == "glb",
+            },
+            "ios": {
+                "format": "usdz",
+                "viewer": "quick_look",
+                "ready": mesh_usdz_path is not None,
+            },
+            "usdz": mesh_usdz_status,
+        },
         "files": {
             "input_image": to_model_url(result.input_path),
             "triposr_input": to_model_url(result.processed_input_path),
@@ -661,6 +782,8 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
             "mesh": mesh_url,
             "mesh_glb": mesh_url if mesh_format == "glb" else None,
             "mesh_obj": mesh_url if mesh_format == "obj" else None,
+            "mesh_usdz": mesh_usdz_url,
+            "ar_usdz": mesh_usdz_url,
             "mesh_colored_ply": colored_mesh_url,
             "preview_png": preview_url,
             "summary_json": to_model_url(result.output_dir / "reconstruction_summary.json"),
@@ -675,6 +798,8 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
             "mesh": str(result.mesh_path),
             "mesh_glb": str(result.mesh_path) if mesh_format == "glb" else None,
             "mesh_obj": str(result.mesh_path) if mesh_format == "obj" else None,
+            "mesh_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
+            "ar_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
             "mesh_colored_ply": str(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None,
             "preview_png": str(result.preview_path) if result.preview_path else None,
             "summary_json": str(result.output_dir / "reconstruction_summary.json"),
@@ -726,6 +851,12 @@ def health_check():
             "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
             "num_points": TRIPOSR_NUM_POINTS,
             "model_save_format": TRIPOSR_MODEL_SAVE_FORMAT,
+        },
+        "ar_export": {
+            "usdz_enabled": AR_USDZ_ENABLED,
+            "blender_found": find_blender_executable() is not None,
+            "blender_path": str(find_blender_executable()) if find_blender_executable() else None,
+            "timeout_seconds": AR_USDZ_TIMEOUT_SECONDS,
         },
         "reconstruction_preprocess": {
             "segmented_mode": "yolo_bbox_crop_for_triposr_rembg",
@@ -856,29 +987,6 @@ async def detect_frame(image: UploadFile = File(...)):
     }
 
 
-@app.post("/upload-scan-video")
-async def upload_scan_video(
-    video: UploadFile = File(...),
-    selected_object: str | None = Form(default=None),
-):
-    return {
-        "job_id": "mock_scan_001",
-        "status": "queued",
-        "filename": video.filename,
-        "selected_object": selected_object,
-    }
-
-
-@app.get("/scan-status/{job_id}")
-def get_scan_status(job_id: str):
-    return {
-        "job_id": job_id,
-        "status": "done",
-        "progress": 100,
-        "model_url": "http://localhost:8000/models/mock_scan_001.glb",
-    }
-
-
 @app.post("/reconstruct-object")
 async def reconstruct_object(
     image: UploadFile = File(...),
@@ -964,6 +1072,8 @@ async def reconstruct_image(image: UploadFile = File(...)):
         "mesh": reconstruction["paths"]["mesh"],
         "mesh_glb": reconstruction["paths"]["mesh_glb"],
         "mesh_obj": reconstruction["paths"]["mesh_obj"],
+        "mesh_usdz": reconstruction["paths"]["mesh_usdz"],
+        "ar_usdz": reconstruction["paths"]["ar_usdz"],
         "mesh_colored_ply": reconstruction["paths"]["mesh_colored_ply"],
         "preview_png": reconstruction["paths"]["preview_png"],
         "model_url": (
@@ -973,5 +1083,6 @@ async def reconstruct_image(image: UploadFile = File(...)):
         ),
         "files": reconstruction["files"],
         "mesh_summary": reconstruction["mesh"],
+        "ar": reconstruction["ar"],
         "reconstruction": reconstruction,
     }

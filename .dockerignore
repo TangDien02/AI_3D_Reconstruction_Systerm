@@ -1,0 +1,13 @@
+.git
+.venv
+.venv*
+mobile/node_modules
+mobile/.expo
+mobile/dist
+server/.venv
+server/models
+server/uploads
+server/segment_outputs
+project/.venv-gpu
+project/.venv-triposr
+project/results

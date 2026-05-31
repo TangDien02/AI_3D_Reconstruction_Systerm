@@ -1,8 +1,0 @@
-numpy
-pandas
-pillow
-matplotlib
-scipy
-trimesh
-torch
-torchvision
