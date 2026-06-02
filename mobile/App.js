@@ -30,8 +30,8 @@ const AR_MODEL_TITLE = 'Recon 3D Model';
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
   'YOLO phat hien va crop vat the',
-  'TripoSR tu tach nen va reconstruct mesh',
-  'Export GLB, colored PLY va point cloud',
+  'Backend goi reconstruction worker de sinh mesh',
+  'Export GLB va cac artifact 3D',
 ];
 
 const buildAndroidSceneViewerUrl = (modelUrl, title = AR_MODEL_TITLE) => {
@@ -67,6 +67,7 @@ export default function App() {
   const [selectedDetectionSize, setSelectedDetectionSize] = useState(null);
   const [segmentResult, setSegmentResult] = useState(null);
   const [reconstructionResult, setReconstructionResult] = useState(null);
+  const [isPaintingTexture, setIsPaintingTexture] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
 
   const clearObjectState = () => {
@@ -80,6 +81,7 @@ export default function App() {
     setSelectedDetectionSize(null);
     setSegmentResult(null);
     setReconstructionResult(null);
+    setIsPaintingTexture(false);
   };
 
   const getServerFileUrl = (path) => {
@@ -266,7 +268,7 @@ export default function App() {
     setSelectedDetectionSize(detectedImageSize);
     setSegmentResult(null);
     setReconstructionResult(null);
-    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de chup full-res va chay TripoSR.`);
+    setCameraStatus(`Da chon ${object.label}. Bam Tai tao de chup full-res va chay reconstruction worker.`);
   };
 
   const reconstructSelectedObject = async () => {
@@ -303,7 +305,7 @@ export default function App() {
       const scaledBbox = scaleBboxToImage(selectedObject.bbox, sourceSize, targetSize);
 
       setSelectedFrameUri(reconstructionPhoto.uri);
-      setCameraStatus('Dang YOLO crop full-res + TripoSR reconstruct + export GLB...');
+      setCameraStatus('Dang YOLO crop full-res + reconstruct mesh + export GLB...');
 
       const formData = new FormData();
       formData.append('image', {
@@ -333,9 +335,44 @@ export default function App() {
     } catch (error) {
       setSegmentResult(null);
       setReconstructionResult(null);
+      setIsPaintingTexture(false);
       setCameraStatus(`Loi reconstruct: ${error.message}`);
     } finally {
       setIsSegmenting(false);
+    }
+  };
+
+  const paintTexture = async () => {
+    const jobId = reconstructionResult?.job_id;
+    if (!jobId) {
+      setCameraStatus('Missing job_id for texture paint.');
+      return;
+    }
+
+    setIsPaintingTexture(true);
+    setCameraStatus('Painting texture on saved shape mesh...');
+
+    try {
+      const formData = new FormData();
+      formData.append('job_id', jobId);
+
+      const response = await fetch(`${API_BASE_URL}/paint-texture`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      setReconstructionResult(payload.reconstruction || null);
+      setCameraStatus('Texture painted. Textured GLB is ready.');
+    } catch (error) {
+      setCameraStatus(`Texture paint failed: ${error.message}`);
+    } finally {
+      setIsPaintingTexture(false);
     }
   };
 
@@ -437,11 +474,25 @@ export default function App() {
     || segmentResult?.files?.masked_crop
   );
   const meshFilePath = (
-    reconstructionResult?.files?.mesh_glb
+    reconstructionResult?.files?.mesh_textured_glb
+    || reconstructionResult?.files?.mesh_textured
+    || reconstructionResult?.files?.mesh_glb
     || reconstructionResult?.files?.mesh_obj
     || reconstructionResult?.files?.mesh
   );
-  const meshFileLabel = reconstructionResult?.files?.mesh_glb
+  const hasTexturedMesh = Boolean(
+    reconstructionResult?.files?.mesh_textured_glb
+    || reconstructionResult?.files?.mesh_textured
+  );
+  const canPaintTexture = Boolean(
+    reconstructionResult?.backend === 'hunyuan_remote'
+    && reconstructionResult?.job_id
+    && reconstructionResult?.files?.mesh_glb
+    && !hasTexturedMesh
+  );
+  const meshFileLabel = hasTexturedMesh
+    ? 'Textured GLB'
+    : reconstructionResult?.files?.mesh_glb
     ? 'GLB'
     : reconstructionResult?.files?.mesh_obj
       ? 'OBJ'
@@ -449,9 +500,12 @@ export default function App() {
   const coloredMeshPath = reconstructionResult?.files?.mesh_colored_ply;
   const pointCloudPath = reconstructionResult?.files?.pointcloud_ply;
   const triposrInputPath = reconstructionResult?.files?.triposr_input;
-  const arGlbPath = reconstructionResult?.files?.mesh_glb;
+  const arGlbPath = reconstructionResult?.files?.mesh_textured_glb || reconstructionResult?.files?.mesh_glb;
   const arUsdzPath = (
-    reconstructionResult?.files?.mesh_usdz
+    reconstructionResult?.files?.mesh_textured_usdz
+    || reconstructionResult?.files?.textured_usdz
+    || reconstructionResult?.files?.ar_textured_usdz
+    || reconstructionResult?.files?.mesh_usdz
     || reconstructionResult?.files?.ar_usdz
     || reconstructionResult?.files?.usdz
   );
@@ -556,7 +610,7 @@ export default function App() {
                   source={{ uri: getServerFileUrl(segmentPreviewPath) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>YOLO bbox crop gui sang TripoSR.</Text>
+                <Text style={styles.segmentPreviewText}>YOLO bbox crop gui sang reconstruction worker.</Text>
               </View>
             )}
             {reconstructionResult && (reconstructionResult.files?.preview_png || meshFilePath) && (
@@ -568,7 +622,7 @@ export default function App() {
                   />
                 )}
                 <View style={styles.reconstructionInfo}>
-                  <Text style={styles.reconstructionTitle}>TripoSR mesh ready</Text>
+                  <Text style={styles.reconstructionTitle}>3D mesh ready</Text>
                   <Text style={styles.reconstructionText}>
                     {reconstructionResult.num_points || 0} pts -> {meshSummary.vertices || 0} verts / {meshSummary.faces || 0} faces
                   </Text>
@@ -579,6 +633,17 @@ export default function App() {
                         onPress={() => openServerFile(meshFilePath)}
                       >
                         <Text style={styles.fileLinkText}>{meshFileLabel}</Text>
+                      </Pressable>
+                    )}
+                    {canPaintTexture && (
+                      <Pressable
+                        style={[styles.fileLink, styles.textureLink, isPaintingTexture && styles.disabledCameraAction]}
+                        onPress={paintTexture}
+                        disabled={isPaintingTexture}
+                      >
+                        <Text style={styles.fileLinkText}>
+                          {isPaintingTexture ? 'Painting' : 'Paint texture'}
+                        </Text>
                       </Pressable>
                     )}
                     {(arGlbPath || arUsdzPath) && (
@@ -658,7 +723,7 @@ export default function App() {
           <Text style={styles.permissionTitle}>Cần quyền camera</Text>
           <Text style={styles.permissionText}>
             Ung dung can quyen camera de quet object, gui YOLO bbox ve backend va tai tao
-            mesh / point cloud bang TripoSR.
+            mesh 3D tu object da detect.
           </Text>
           <Pressable style={styles.primaryButton} onPress={openCamera}>
             <Text style={styles.primaryButtonText}>Cho phép camera</Text>
@@ -686,7 +751,7 @@ export default function App() {
           <Text style={styles.title}>Quét vật thể và tái tạo mô hình 3D</Text>
           <Text style={styles.subtitle}>
             Camera mobile detect object lien tuc, chon bbox, gui anh sang backend de YOLO crop,
-            TripoSR tu tach nen, reconstruct mesh va export GLB / colored PLY.
+            Backend crop object, reconstruct mesh va export artifact 3D.
           </Text>
         </View>
 
@@ -705,7 +770,7 @@ export default function App() {
         <View style={styles.noteBox}>
           <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
           <Text style={styles.noteText}>
-            Backend dang dung TripoSR. YOLO chi chon bbox va crop vat the; TripoSR xu ly nen,
+            Backend dang dung reconstruction worker. YOLO chi chon bbox va crop vat the; worker xu ly nen,
             dung mesh GLB va xuat colored PLY de kiem tra mau sac trong Blender.
           </Text>
         </View>
@@ -1079,6 +1144,7 @@ const styles = StyleSheet.create({
   },
   linkRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 8,
   },
@@ -1094,6 +1160,10 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '900',
+  },
+  textureLink: {
+    minWidth: 104,
+    backgroundColor: '#079455',
   },
   actionRow: {
     flexDirection: 'row',

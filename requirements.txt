@@ -3,6 +3,7 @@
 fastapi==0.136.3
 uvicorn[standard]==0.48.0
 python-multipart==0.0.29
+httpx==0.28.1
 numpy<2
 pillow==10.1.0
 matplotlib==3.10.9

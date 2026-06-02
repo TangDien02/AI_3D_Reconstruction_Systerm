@@ -103,9 +103,9 @@ def _import_triposr(config: TripoSRConfig):
                 continue
 
         install_hint = (
-            "TripoSR runtime is not importable. Clone the official repo to "
-            f"{_default_triposr_repo_dir()} or set TRIPOSR_REPO_DIR, then install "
-            "project/requirements-triposr.txt. Official repo: "
+            "TripoSR runtime is not importable. The repo expects vendored TripoSR "
+            f"sources at {_default_triposr_repo_dir()}. If you moved them, set "
+            "TRIPOSR_REPO_DIR to that location. Official upstream: "
             "https://github.com/VAST-AI-Research/TripoSR"
         )
         raise TripoSRDependencyError(install_hint) from first_exc

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import mimetypes
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ from threading import Lock
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -80,6 +82,11 @@ TRIPOSR_REMOVE_BACKGROUND = env_bool("TRIPOSR_REMOVE_BACKGROUND", True)
 TRIPOSR_SAVE_PREVIEW = env_bool("TRIPOSR_SAVE_PREVIEW", True)
 TRIPOSR_CROP_MARGIN_RATIO = env_float("TRIPOSR_CROP_MARGIN_RATIO", 0.16)
 TRIPOSR_CROP_MIN_MARGIN_PX = env_int("TRIPOSR_CROP_MIN_MARGIN_PX", 16)
+RECONSTRUCTION_BACKEND = os.environ.get("RECONSTRUCTION_BACKEND", "triposr").strip().lower()
+HUNYUAN_REMOTE_URL = os.environ.get("HUNYUAN_REMOTE_URL", "").strip().rstrip("/")
+HUNYUAN_REMOTE_TIMEOUT_SECONDS = env_int("HUNYUAN_REMOTE_TIMEOUT_SECONDS", 900)
+HUNYUAN_REMOTE_OUTPUT_FORMAT = os.environ.get("HUNYUAN_REMOTE_OUTPUT_FORMAT", "glb").strip().lower()
+HUNYUAN_REMOTE_ENABLE_TEXTURE = env_bool("HUNYUAN_REMOTE_ENABLE_TEXTURE", False)
 AR_USDZ_ENABLED = env_bool("AR_USDZ_ENABLED", True)
 AR_USDZ_TIMEOUT_SECONDS = env_int("AR_USDZ_TIMEOUT_SECONDS", 180)
 BLENDER_PATH = os.environ.get("BLENDER_PATH")
@@ -710,6 +717,9 @@ def save_segment_artifacts(
 
 
 def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
+    if RECONSTRUCTION_BACKEND == "hunyuan_remote":
+        return save_hunyuan_remote_artifacts(input_path, job_id, label=label)
+
     try:
         from src.reconstruction.triposr_runner import TripoSRDependencyError
     except Exception as exc:
@@ -810,6 +820,216 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
     return payload
 
 
+def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
+    if not HUNYUAN_REMOTE_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="HUNYUAN_REMOTE_URL is not configured for RECONSTRUCTION_BACKEND=hunyuan_remote.",
+        )
+    if HUNYUAN_REMOTE_OUTPUT_FORMAT != "glb":
+        raise HTTPException(
+            status_code=500,
+            detail="Only glb output is currently supported for hunyuan_remote.",
+        )
+
+    sample_dir = MODEL_OUTPUT_DIR / job_id
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    copied_input_path = sample_dir / f"input{input_path.suffix or '.png'}"
+    shutil.copy2(input_path, copied_input_path)
+
+    remote_endpoint = "generate-textured-shape" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "generate-shape"
+    request_url = f"{HUNYUAN_REMOTE_URL}/{remote_endpoint}"
+    content_type = mimetypes.guess_type(input_path.name)[0] or "application/octet-stream"
+    try:
+        with input_path.open("rb") as image_file:
+            files = {
+                "image": (input_path.name, image_file, content_type),
+            }
+            data = {
+                "job_id": job_id,
+                "output_format": HUNYUAN_REMOTE_OUTPUT_FORMAT,
+            }
+            with httpx.Client(timeout=HUNYUAN_REMOTE_TIMEOUT_SECONDS) as client:
+                response = client.post(
+                    request_url,
+                    data=data,
+                    files=files,
+                    headers={"ngrok-skip-browser-warning": "true"},
+                )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Remote Hunyuan worker request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        detail = response.text.strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote Hunyuan worker returned HTTP {response.status_code}: {detail or 'empty response'}",
+        )
+
+    mesh_path = sample_dir / "mesh.glb"
+    mesh_path.write_bytes(response.content)
+
+    mesh_usdz_path, mesh_usdz_status = convert_glb_to_usdz(mesh_path)
+    mesh_usdz_url = to_model_url(mesh_usdz_path) if mesh_usdz_path else None
+
+    mesh_summary = {
+        "format": "glb",
+        "vertices": None,
+        "faces": None,
+        "has_vertex_colors": None,
+        "colored_mesh_ply": False,
+    }
+    payload = {
+        "job_id": job_id,
+        "label": label,
+        "backend": "hunyuan_remote",
+        "output_dir": str(sample_dir),
+        "input_image": str(copied_input_path),
+        "num_points": 0,
+        "model": {
+            "name": "Tencent-Hunyuan/Hunyuan3D-2",
+            "type": "hunyuan_remote",
+            "device": "remote_gpu",
+            "remove_background": None,
+            "mc_resolution": None,
+            "foreground_ratio": None,
+            "remote_url": HUNYUAN_REMOTE_URL,
+            "remote_endpoint": remote_endpoint,
+            "texture_enabled": HUNYUAN_REMOTE_ENABLE_TEXTURE,
+        },
+        "mesh": mesh_summary,
+        "ar": {
+            "android": {
+                "format": "glb",
+                "viewer": "scene_viewer",
+                "ready": True,
+            },
+            "ios": {
+                "format": "usdz",
+                "viewer": "quick_look",
+                "ready": mesh_usdz_path is not None,
+            },
+            "usdz": mesh_usdz_status,
+        },
+        "files": {
+            "input_image": to_model_url(copied_input_path),
+            "triposr_input": None,
+            "pointcloud_npy": None,
+            "pointcloud_ply": None,
+            "mesh": to_model_url(mesh_path),
+            "mesh_glb": to_model_url(mesh_path),
+            "mesh_obj": None,
+            "mesh_usdz": mesh_usdz_url,
+            "ar_usdz": mesh_usdz_url,
+            "mesh_colored_ply": None,
+            "preview_png": None,
+            "summary_json": to_model_url(sample_dir / "reconstruction_summary.json"),
+            "triposr_summary_json": None,
+        },
+        "paths": {
+            "output_dir": str(sample_dir),
+            "input_image": str(copied_input_path),
+            "triposr_input": None,
+            "pointcloud_npy": None,
+            "pointcloud_ply": None,
+            "mesh": str(mesh_path),
+            "mesh_glb": str(mesh_path),
+            "mesh_obj": None,
+            "mesh_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
+            "ar_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
+            "mesh_colored_ply": None,
+            "preview_png": None,
+            "summary_json": str(sample_dir / "reconstruction_summary.json"),
+            "triposr_summary_json": None,
+        },
+    }
+    write_json(sample_dir / "reconstruction_summary.json", payload)
+    return payload
+
+
+def paint_hunyuan_remote_artifacts(job_id: str) -> dict:
+    if not HUNYUAN_REMOTE_URL:
+        raise HTTPException(
+            status_code=503,
+            detail="HUNYUAN_REMOTE_URL is not configured for Hunyuan texture paint.",
+        )
+
+    sample_dir = MODEL_OUTPUT_DIR / job_id
+    if not sample_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Model job not found: {job_id}")
+
+    image_candidates = sorted(sample_dir.glob("input.*"))
+    if not image_candidates:
+        raise HTTPException(status_code=404, detail=f"Input image not found for job: {job_id}")
+
+    mesh_path = sample_dir / "mesh.glb"
+    if not mesh_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Shape mesh not found for job: {job_id}")
+
+    input_path = image_candidates[0]
+    request_url = f"{HUNYUAN_REMOTE_URL}/generate-texture"
+    image_content_type = mimetypes.guess_type(input_path.name)[0] or "application/octet-stream"
+    mesh_content_type = mimetypes.guess_type(mesh_path.name)[0] or "model/gltf-binary"
+
+    try:
+        with input_path.open("rb") as image_file, mesh_path.open("rb") as mesh_file:
+            files = {
+                "image": (input_path.name, image_file, image_content_type),
+                "mesh": (mesh_path.name, mesh_file, mesh_content_type),
+            }
+            data = {
+                "job_id": f"{job_id}_texture",
+                "output_format": "glb",
+            }
+            with httpx.Client(timeout=HUNYUAN_REMOTE_TIMEOUT_SECONDS) as client:
+                response = client.post(
+                    request_url,
+                    data=data,
+                    files=files,
+                    headers={"ngrok-skip-browser-warning": "true"},
+                )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Remote Hunyuan texture request failed: {exc}") from exc
+
+    if response.status_code != 200:
+        detail = response.text.strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote Hunyuan texture returned HTTP {response.status_code}: {detail[:2000] or 'empty response'}",
+        )
+
+    textured_mesh_path = sample_dir / "mesh_textured.glb"
+    textured_mesh_path.write_bytes(response.content)
+    textured_usdz_path, textured_usdz_status = convert_glb_to_usdz(textured_mesh_path)
+    textured_usdz_url = to_model_url(textured_usdz_path) if textured_usdz_path else None
+
+    summary_path = sample_dir / "reconstruction_summary.json"
+    payload = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {
+        "job_id": job_id,
+        "backend": "hunyuan_remote",
+        "output_dir": str(sample_dir),
+        "files": {},
+        "paths": {},
+        "ar": {},
+        "model": {},
+    }
+    payload.setdefault("model", {})["texture_endpoint"] = "generate-texture"
+    payload.setdefault("model", {})["texture_painted"] = True
+    payload.setdefault("files", {})["mesh_textured_glb"] = to_model_url(textured_mesh_path)
+    payload.setdefault("files", {})["mesh_textured"] = to_model_url(textured_mesh_path)
+    payload.setdefault("files", {})["mesh"] = to_model_url(textured_mesh_path)
+    payload.setdefault("files", {})["mesh_glb"] = to_model_url(textured_mesh_path)
+    payload.setdefault("paths", {})["mesh_textured_glb"] = str(textured_mesh_path)
+    payload.setdefault("paths", {})["mesh_textured"] = str(textured_mesh_path)
+    payload.setdefault("paths", {})["mesh"] = str(textured_mesh_path)
+    payload.setdefault("paths", {})["mesh_glb"] = str(textured_mesh_path)
+    payload.setdefault("ar", {})["textured_usdz"] = textured_usdz_status
+    payload["files"]["mesh_textured_usdz"] = textured_usdz_url
+    payload["paths"]["mesh_textured_usdz"] = str(textured_usdz_path) if textured_usdz_path else None
+    write_json(summary_path, payload)
+    return payload
+
+
 @app.on_event("startup")
 def warmup_yolo_model():
     try:
@@ -841,7 +1061,7 @@ def health_check():
             "iou": DETECTION_IOU,
         },
         "reconstruction": {
-            "backend": "triposr",
+            "backend": RECONSTRUCTION_BACKEND,
             "model_name_or_path": TRIPOSR_MODEL_NAME_OR_PATH,
             "repo_dir": TRIPOSR_REPO_DIR,
             "device": TRIPOSR_DEVICE,
@@ -851,6 +1071,9 @@ def health_check():
             "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
             "num_points": TRIPOSR_NUM_POINTS,
             "model_save_format": TRIPOSR_MODEL_SAVE_FORMAT,
+            "hunyuan_remote_url": HUNYUAN_REMOTE_URL or None,
+            "hunyuan_remote_timeout_seconds": HUNYUAN_REMOTE_TIMEOUT_SECONDS,
+            "hunyuan_remote_texture_enabled": HUNYUAN_REMOTE_ENABLE_TEXTURE,
         },
         "ar_export": {
             "usdz_enabled": AR_USDZ_ENABLED,
@@ -1084,5 +1307,26 @@ async def reconstruct_image(image: UploadFile = File(...)):
         "files": reconstruction["files"],
         "mesh_summary": reconstruction["mesh"],
         "ar": reconstruction["ar"],
+        "reconstruction": reconstruction,
+    }
+
+
+@app.post("/paint-texture")
+async def paint_texture(job_id: str = Form(...)):
+    if RECONSTRUCTION_BACKEND != "hunyuan_remote":
+        raise HTTPException(
+            status_code=400,
+            detail="Texture paint is currently available only with RECONSTRUCTION_BACKEND=hunyuan_remote.",
+        )
+
+    reconstruction = paint_hunyuan_remote_artifacts(job_id)
+    return {
+        "job_id": job_id,
+        "status": "done",
+        "backend": "hunyuan_remote",
+        "model_url": reconstruction["files"].get("mesh_textured_glb") or reconstruction["files"].get("mesh_glb"),
+        "files": reconstruction["files"],
+        "paths": reconstruction["paths"],
+        "ar": reconstruction.get("ar"),
         "reconstruction": reconstruction,
     }
