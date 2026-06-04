@@ -121,21 +121,10 @@ Android Emulator:
 $env:EXPO_PUBLIC_API_BASE_URL="http://10.0.2.2:8000"
 ```
 
-## Docker
+## Deployment
 
-```powershell
-docker compose up --build backend
-```
-
-Set `HUNYUAN_REMOTE_URL` trong shell truoc khi chay Docker Compose.
-
-## Google Cloud
-
-Huong dan deploy/chay tu mot clone moi nam trong:
-
-```text
-GOOGLE_CLOUD_DEPLOY.md
-```
+Project nay khong dung Docker/Cloud Run trong runtime hien tai. Deployment
+chinh la GPU VM + systemd/tmux + Cloudflare tunnel.
 
 Bo huong dan final de dung lai VM/backend khi instance bi kill nam trong:
 
@@ -150,8 +139,9 @@ tmux/backend helper.
 
 Tom tat:
 
-- Backend co Dockerfile Python 3.11 va `cloudbuild.yaml` de build image cho Cloud Run.
-- Hunyuan3D-2 shape/texture nen chay tren Google Compute Engine GPU VM bang:
+- Full VM end-to-end: chay `deploy/VM_END_TO_END_SETUP.ipynb`.
+- Worker VM + backend Windows: chay `deploy/FINAL_VM_DEPLOY.ipynb`.
+- Hunyuan3D-2 worker co the setup bang:
 
 ```bash
 bash scripts/gcp_hunyuan_worker_bootstrap.sh
