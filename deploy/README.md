@@ -23,6 +23,10 @@ Expo mobile app
 
 Khong dung Gemini/Nano Banana API. Khong dung TripoSR.
 
+Neu VM vua bi stop/start lai, mo `COMMANDS.md` muc
+`VM GPU: reopen Jupyter after VM stop` truoc, sau do moi mo notebook tren
+JupyterLab.
+
 `VM_END_TO_END_SETUP.ipynb` bao gom cell OS/NVIDIA driver/CUDA Toolkit cho
 Debian 12. Version pin Hunyuan runtime nam trong
 `scripts/gcp_hunyuan_worker_bootstrap.sh`:

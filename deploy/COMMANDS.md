@@ -19,6 +19,45 @@ df -h
 free -h
 ```
 
+## VM GPU: reopen Jupyter after VM stop
+
+When the VM is stopped, JupyterLab and quick Cloudflare tunnels stop too.
+
+SSH tab 1:
+
+```bash
+tmux ls || true
+tmux new -s jupyter
+cd ~/work
+source venv/bin/activate
+source ~/.bashrc
+jupyter lab --no-browser --ip=127.0.0.1 --port=8888 --ServerApp.allow_remote_access=True
+```
+
+If `duplicate session: jupyter`:
+
+```bash
+tmux attach -t jupyter
+```
+
+Detach without stopping Jupyter:
+
+```text
+Ctrl+B, then D
+```
+
+SSH tab 2:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8888
+```
+
+Open:
+
+```text
+https://YOUR_JUPYTER_TUNNEL.trycloudflare.com/lab?token=YOUR_JUPYTER_TOKEN
+```
+
 ## VM GPU: clone va setup worker
 
 ```bash
