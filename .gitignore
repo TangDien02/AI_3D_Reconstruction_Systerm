@@ -26,6 +26,7 @@ server/segment_outputs/
 server/smoke_outputs/
 server/backend_*_stdout.log
 server/backend_*_stderr.log
+server/backend_*.log
 
 project/results/
 project/data/raw/

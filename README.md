@@ -137,6 +137,15 @@ Huong dan deploy/chay tu mot clone moi nam trong:
 GOOGLE_CLOUD_DEPLOY.md
 ```
 
+Bo huong dan final de dung lai VM/backend khi instance bi kill nam trong:
+
+```text
+deploy/
+```
+
+Trong do co `FINAL_VM_DEPLOY.ipynb`, `APP_FEATURES_AND_USAGE.md`,
+`requirements.txt`, `COMMANDS.md`, va cac script tmux/backend helper.
+
 Tom tat:
 
 - Backend co Dockerfile Python 3.11 va `cloudbuild.yaml` de build image cho Cloud Run.

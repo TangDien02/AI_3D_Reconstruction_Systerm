@@ -279,7 +279,7 @@ export default function App() {
     setSegmentResult(null);
     setReconstructionResult(null);
     setIsPaintingTexture(false);
-    setCameraStatus('Dang crop, clean bang Gemini va tao mesh...');
+    setCameraStatus('Dang crop, local clean va tao mesh...');
 
     try {
       const bbox = bboxToImagePixels(manualBbox);
@@ -883,7 +883,7 @@ export default function App() {
                   source={{ uri: getServerFileUrl(segmentPreviewPath) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>Gemini clean input gui sang Hunyuan worker.</Text>
+                <Text style={styles.segmentPreviewText}>Local clean input gui sang Hunyuan worker.</Text>
               </View>
             )}
             {reconstructionResult && (reconstructionResult.files?.preview_png || meshFilePath) && (

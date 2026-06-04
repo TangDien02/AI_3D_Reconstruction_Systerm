@@ -1,5 +1,9 @@
-# Runtime dependencies for the mobile -> backend -> local bbox cleanup -> Hunyuan remote pipeline.
-# Supported interpreter: Python 3.11.x
+# Full runtime dependencies for this repo's backend/project code.
+# Python: 3.11.x
+#
+# Hunyuan3D itself is installed on the GPU VM from Tencent's
+# Hunyuan3D-2 repository requirements by scripts/gcp_hunyuan_worker_bootstrap.sh.
+
 fastapi==0.136.3
 uvicorn[standard]==0.48.0
 python-multipart==0.0.29

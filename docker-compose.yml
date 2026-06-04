@@ -13,6 +13,10 @@ services:
       HUNYUAN_REMOTE_URL: ${HUNYUAN_REMOTE_URL:-}
       HUNYUAN_REMOTE_OUTPUT_FORMAT: glb
       HUNYUAN_REMOTE_ENABLE_TEXTURE: "false"
+      IMAGE_CLEANER_BACKEND: ${IMAGE_CLEANER_BACKEND:-auto}
+      ENABLE_REMBG_CLEANER: ${ENABLE_REMBG_CLEANER:-true}
+      CLEAN_IMAGE_MAX_SIDE: ${CLEAN_IMAGE_MAX_SIDE:-1536}
+      CLEAN_IMAGE_PAD_RATIO: ${CLEAN_IMAGE_PAD_RATIO:-0.08}
     volumes:
       - ./server:/app/server
       - ./project:/app/project
