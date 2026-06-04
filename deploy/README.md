@@ -23,6 +23,17 @@ Expo mobile app
 
 Khong dung Gemini/Nano Banana API. Khong dung TripoSR.
 
+`VM_END_TO_END_SETUP.ipynb` bao gom cell OS/NVIDIA driver/CUDA Toolkit cho
+Debian 12. Version pin Hunyuan runtime nam trong
+`scripts/gcp_hunyuan_worker_bootstrap.sh`:
+
+- PyTorch CUDA wheels: `https://download.pytorch.org/whl/cu126`
+- `diffusers==0.31.0`
+- `transformers==4.46.3`
+- `tokenizers==0.20.3`
+- `huggingface_hub==0.26.2`
+- `accelerate==1.1.1`
+
 ## Quick path neu VM bi kill
 
 1. Tao lai GPU VM Debian/Ubuntu co NVIDIA driver va CUDA OK.
