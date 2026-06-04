@@ -11,7 +11,7 @@ import sys
 import time
 import subprocess
 from datetime import datetime
-from threading import Lock
+from threading import Lock, Thread
 import uuid
 from pathlib import Path
 
@@ -100,6 +100,8 @@ _yolo_model = None
 _yolo_model_lock = Lock()
 _triposr_core = None
 _triposr_core_lock = Lock()
+_texture_jobs: dict[str, dict] = {}
+_texture_jobs_lock = Lock()
 
 
 def get_yolo_device() -> str:
@@ -820,6 +822,105 @@ def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | No
     return payload
 
 
+def wait_for_hunyuan_job(client: httpx.Client, remote_job_id: str, started_at: float) -> bytes:
+    status_url = f"{HUNYUAN_REMOTE_URL}/jobs/{remote_job_id}"
+    mesh_url = f"{HUNYUAN_REMOTE_URL}/jobs/{remote_job_id}/mesh"
+    headers = {"ngrok-skip-browser-warning": "true"}
+    poll_interval = env_float("HUNYUAN_REMOTE_POLL_INTERVAL_SECONDS", 5.0)
+
+    while True:
+        elapsed = time.perf_counter() - started_at
+        if elapsed > HUNYUAN_REMOTE_TIMEOUT_SECONDS:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Remote Hunyuan worker timed out waiting for job {remote_job_id}.",
+            )
+
+        status_response = client.get(status_url, headers=headers)
+        if is_transient_remote_status(status_response.status_code):
+            time.sleep(max(1.0, poll_interval))
+            continue
+        if status_response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Remote Hunyuan job status returned HTTP {status_response.status_code}: "
+                    f"{summarize_remote_error(status_response.text)}"
+                ),
+            )
+
+        status_payload = status_response.json()
+        status = status_payload.get("status")
+        if status == "done":
+            mesh_response = client.get(mesh_url, headers=headers)
+            if is_transient_remote_status(mesh_response.status_code):
+                time.sleep(max(1.0, poll_interval))
+                continue
+            if mesh_response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Remote Hunyuan mesh download returned HTTP {mesh_response.status_code}: "
+                        f"{summarize_remote_error(mesh_response.text)}"
+                    ),
+                )
+            return mesh_response.content
+        if status == "error":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Remote Hunyuan job failed: {status_payload.get('error') or status_payload}",
+            )
+
+        time.sleep(max(1.0, poll_interval))
+
+
+def is_transient_remote_status(status_code: int) -> bool:
+    return status_code in {408, 425, 429, 500, 502, 503, 504, 520, 522, 523, 524, 525, 526, 530}
+
+
+def summarize_remote_error(text: str) -> str:
+    detail = text.strip()
+    if not detail:
+        return "empty response"
+
+    ngrok_code = re.search(r"ERR_NGROK_\d+", detail)
+    noscript = re.search(r"<noscript>(.*?)</noscript>", detail, flags=re.DOTALL | re.IGNORECASE)
+    if ngrok_code or noscript:
+        message = re.sub(r"\s+", " ", noscript.group(1)).strip() if noscript else "ngrok returned an HTML error page"
+        return f"{ngrok_code.group(0) if ngrok_code else 'ngrok error'}: {message}"[:2000]
+
+    return detail[:2000]
+
+
+def cleanup_hunyuan_worker_for_texture(client: httpx.Client) -> None:
+    cleanup_url = f"{HUNYUAN_REMOTE_URL}/cleanup-memory"
+    headers = {"ngrok-skip-browser-warning": "true"}
+    response = client.post(
+        cleanup_url,
+        params={
+            "unload_shape": "true",
+            "unload_texture": "false",
+            "clear_jobs": "false",
+        },
+        headers=headers,
+    )
+    if response.status_code in {404, 405}:
+        return
+    if response.status_code == 409:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Remote Hunyuan worker is busy: {summarize_remote_error(response.text)}",
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Remote Hunyuan cleanup before texture returned HTTP {response.status_code}: "
+                f"{summarize_remote_error(response.text)}"
+            ),
+        )
+
+
 def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
     if not HUNYUAN_REMOTE_URL:
         raise HTTPException(
@@ -837,9 +938,10 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
     copied_input_path = sample_dir / f"input{input_path.suffix or '.png'}"
     shutil.copy2(input_path, copied_input_path)
 
-    remote_endpoint = "generate-textured-shape" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "generate-shape"
+    remote_endpoint = "start-textured-shape" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "start-shape"
     request_url = f"{HUNYUAN_REMOTE_URL}/{remote_endpoint}"
     content_type = mimetypes.guess_type(input_path.name)[0] or "application/octet-stream"
+    response_content = None
     try:
         with input_path.open("rb") as image_file:
             files = {
@@ -856,18 +958,34 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
                     files=files,
                     headers={"ngrok-skip-browser-warning": "true"},
                 )
+                if response.status_code == 404:
+                    legacy_endpoint = "generate-textured-shape" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "generate-shape"
+                    legacy_url = f"{HUNYUAN_REMOTE_URL}/{legacy_endpoint}"
+                    image_file.seek(0)
+                    response = client.post(
+                        legacy_url,
+                        data=data,
+                        files=files,
+                        headers={"ngrok-skip-browser-warning": "true"},
+                    )
+                    response_content = response.content if response.status_code == 200 else None
+                elif response.status_code == 200:
+                    remote_job_id = response.json().get("job_id", job_id)
+                    response_content = wait_for_hunyuan_job(client, remote_job_id, time.perf_counter())
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Remote Hunyuan worker request failed: {exc}") from exc
 
     if response.status_code != 200:
-        detail = response.text.strip()
         raise HTTPException(
             status_code=502,
-            detail=f"Remote Hunyuan worker returned HTTP {response.status_code}: {detail or 'empty response'}",
+            detail=(
+                f"Remote Hunyuan worker endpoint {remote_endpoint} returned HTTP {response.status_code}: "
+                f"{summarize_remote_error(response.text)}"
+            ),
         )
 
     mesh_path = sample_dir / "mesh.glb"
-    mesh_path.write_bytes(response.content)
+    mesh_path.write_bytes(response_content if response_content is not None else response.content)
 
     mesh_usdz_path, mesh_usdz_status = convert_glb_to_usdz(mesh_path)
     mesh_usdz_url = to_model_url(mesh_usdz_path) if mesh_usdz_path else None
@@ -967,10 +1085,11 @@ def paint_hunyuan_remote_artifacts(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Shape mesh not found for job: {job_id}")
 
     input_path = image_candidates[0]
-    request_url = f"{HUNYUAN_REMOTE_URL}/generate-texture"
+    request_url = f"{HUNYUAN_REMOTE_URL}/start-texture"
     image_content_type = mimetypes.guess_type(input_path.name)[0] or "application/octet-stream"
     mesh_content_type = mimetypes.guess_type(mesh_path.name)[0] or "model/gltf-binary"
 
+    response_content = None
     try:
         with input_path.open("rb") as image_file, mesh_path.open("rb") as mesh_file:
             files = {
@@ -982,24 +1101,37 @@ def paint_hunyuan_remote_artifacts(job_id: str) -> dict:
                 "output_format": "glb",
             }
             with httpx.Client(timeout=HUNYUAN_REMOTE_TIMEOUT_SECONDS) as client:
+                cleanup_hunyuan_worker_for_texture(client)
                 response = client.post(
                     request_url,
                     data=data,
                     files=files,
                     headers={"ngrok-skip-browser-warning": "true"},
                 )
+                if response.status_code == 404:
+                    image_file.seek(0)
+                    mesh_file.seek(0)
+                    response = client.post(
+                        f"{HUNYUAN_REMOTE_URL}/generate-texture",
+                        data=data,
+                        files=files,
+                        headers={"ngrok-skip-browser-warning": "true"},
+                    )
+                    response_content = response.content if response.status_code == 200 else None
+                elif response.status_code == 200:
+                    remote_job_id = response.json().get("job_id", f"{job_id}_texture")
+                    response_content = wait_for_hunyuan_job(client, remote_job_id, time.perf_counter())
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Remote Hunyuan texture request failed: {exc}") from exc
 
     if response.status_code != 200:
-        detail = response.text.strip()
         raise HTTPException(
             status_code=502,
-            detail=f"Remote Hunyuan texture returned HTTP {response.status_code}: {detail[:2000] or 'empty response'}",
+            detail=f"Remote Hunyuan texture returned HTTP {response.status_code}: {summarize_remote_error(response.text)}",
         )
 
     textured_mesh_path = sample_dir / "mesh_textured.glb"
-    textured_mesh_path.write_bytes(response.content)
+    textured_mesh_path.write_bytes(response_content if response_content is not None else response.content)
     textured_usdz_path, textured_usdz_status = convert_glb_to_usdz(textured_mesh_path)
     textured_usdz_url = to_model_url(textured_usdz_path) if textured_usdz_path else None
 
@@ -1013,7 +1145,7 @@ def paint_hunyuan_remote_artifacts(job_id: str) -> dict:
         "ar": {},
         "model": {},
     }
-    payload.setdefault("model", {})["texture_endpoint"] = "generate-texture"
+    payload.setdefault("model", {})["texture_endpoint"] = "start-texture"
     payload.setdefault("model", {})["texture_painted"] = True
     payload.setdefault("files", {})["mesh_textured_glb"] = to_model_url(textured_mesh_path)
     payload.setdefault("files", {})["mesh_textured"] = to_model_url(textured_mesh_path)
@@ -1028,6 +1160,60 @@ def paint_hunyuan_remote_artifacts(job_id: str) -> dict:
     payload["paths"]["mesh_textured_usdz"] = str(textured_usdz_path) if textured_usdz_path else None
     write_json(summary_path, payload)
     return payload
+
+
+def texture_response(job_id: str, reconstruction: dict) -> dict:
+    return {
+        "job_id": job_id,
+        "status": "done",
+        "backend": "hunyuan_remote",
+        "model_url": reconstruction["files"].get("mesh_textured_glb") or reconstruction["files"].get("mesh_glb"),
+        "files": reconstruction["files"],
+        "paths": reconstruction["paths"],
+        "ar": reconstruction.get("ar"),
+        "reconstruction": reconstruction,
+    }
+
+
+def set_texture_job(job_id: str, payload: dict) -> None:
+    with _texture_jobs_lock:
+        current = _texture_jobs.get(job_id, {})
+        current.update(payload)
+        current["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        _texture_jobs[job_id] = current
+
+
+def get_texture_job(job_id: str) -> dict | None:
+    with _texture_jobs_lock:
+        job = _texture_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def run_texture_job(job_id: str) -> None:
+    set_texture_job(job_id, {"job_id": job_id, "status": "running", "error": None})
+    try:
+        reconstruction = paint_hunyuan_remote_artifacts(job_id)
+        set_texture_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "done",
+                "result": texture_response(job_id, reconstruction),
+                "error": None,
+            },
+        )
+    except HTTPException as exc:
+        set_texture_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "error",
+                "error": exc.detail,
+                "status_code": exc.status_code,
+            },
+        )
+    except Exception as exc:
+        set_texture_job(job_id, {"job_id": job_id, "status": "error", "error": str(exc)})
 
 
 @app.on_event("startup")
@@ -1319,14 +1505,43 @@ async def paint_texture(job_id: str = Form(...)):
             detail="Texture paint is currently available only with RECONSTRUCTION_BACKEND=hunyuan_remote.",
         )
 
-    reconstruction = paint_hunyuan_remote_artifacts(job_id)
+    existing = get_texture_job(job_id)
+    if existing:
+        if existing.get("status") == "done":
+            return existing["result"]
+        return {
+            "job_id": job_id,
+            "status": existing.get("status", "running"),
+            "status_url": f"/texture-jobs/{job_id}",
+            "error": existing.get("error"),
+        }
+
+    set_texture_job(job_id, {"job_id": job_id, "status": "queued", "error": None})
+    Thread(target=run_texture_job, args=(job_id,), daemon=True).start()
     return {
         "job_id": job_id,
-        "status": "done",
+        "status": "started",
         "backend": "hunyuan_remote",
-        "model_url": reconstruction["files"].get("mesh_textured_glb") or reconstruction["files"].get("mesh_glb"),
-        "files": reconstruction["files"],
-        "paths": reconstruction["paths"],
-        "ar": reconstruction.get("ar"),
-        "reconstruction": reconstruction,
+        "status_url": f"/texture-jobs/{job_id}",
+    }
+
+
+@app.get("/texture-jobs/{job_id}")
+async def texture_job_status(job_id: str):
+    job = get_texture_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Texture job not found: {job_id}")
+    if job.get("status") == "done":
+        return job["result"]
+    if job.get("status") == "error":
+        return {
+            "job_id": job_id,
+            "status": "error",
+            "error": job.get("error"),
+            "status_code": job.get("status_code"),
+        }
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "running"),
+        "updated_at": job.get("updated_at"),
     }

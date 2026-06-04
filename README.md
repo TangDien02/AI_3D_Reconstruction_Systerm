@@ -165,3 +165,29 @@ Docker la fallback cho backend. Build context da tro ve root de backend thay duo
 ```powershell
 docker compose up --build backend
 ```
+
+## Google Cloud
+
+Huong dan deploy/chay tu mot clone moi nam trong:
+
+```text
+GOOGLE_CLOUD_DEPLOY.md
+```
+
+Tom tat:
+
+- Backend co Dockerfile Python 3.11 va `cloudbuild.yaml` de build image cho Cloud Run.
+- Hunyuan3D-2 shape/texture nen chay tren Google Compute Engine GPU VM bang:
+
+```bash
+bash scripts/gcp_hunyuan_worker_bootstrap.sh
+```
+
+- Backend VM co the chay bang:
+
+```bash
+export HUNYUAN_REMOTE_URL="https://YOUR_WORKER_8010_URL"
+bash scripts/gcp_backend_vm_bootstrap.sh
+```
+
+- Copy `.env.example` thanh `.env` hoac set cac bien moi truong tu shell/Cloud Run.

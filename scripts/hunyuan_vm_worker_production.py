@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import io
-import gc
-import os
 import ctypes
+import gc
+import io
+import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -17,11 +18,11 @@ from starlette.concurrency import run_in_threadpool
 import torch
 
 
-WORK_DIR = Path(os.environ.get("HUNYUAN_COLAB_WORK_DIR", "/tmp/hunyuan_jobs"))
-MODEL_ID = os.environ.get("HUNYUAN_MODEL_ID", "tencent/Hunyuan3D-2mini")
-MODEL_SUBFOLDER = os.environ.get("HUNYUAN_MODEL_SUBFOLDER", "hunyuan3d-dit-v2-mini")
+WORK_DIR = Path(os.environ.get("HUNYUAN_VM_WORK_DIR", "/tmp/hunyuan_jobs"))
+MODEL_ID = os.environ.get("HUNYUAN_MODEL_ID", "tencent/Hunyuan3D-2")
+MODEL_SUBFOLDER = os.environ.get("HUNYUAN_MODEL_SUBFOLDER", "hunyuan3d-dit-v2-0")
 TEXGEN_MODEL_ID = os.environ.get("HUNYUAN_TEXGEN_MODEL_ID", "tencent/Hunyuan3D-2")
-INFERENCE_STEPS = int(os.environ.get("HUNYUAN_INFERENCE_STEPS", "15"))
+INFERENCE_STEPS = int(os.environ.get("HUNYUAN_INFERENCE_STEPS", "25"))
 OCTREE_RESOLUTION = int(os.environ.get("HUNYUAN_OCTREE_RESOLUTION", "256"))
 NUM_CHUNKS = int(os.environ.get("HUNYUAN_NUM_CHUNKS", "6000"))
 SEED = int(os.environ.get("HUNYUAN_SEED", "12345"))
@@ -40,7 +41,7 @@ KEEP_SHAPE_PIPELINE = os.environ.get("HUNYUAN_KEEP_SHAPE_PIPELINE", "0").strip()
     "yes",
     "on",
 }
-KEEP_TEXTURE_PIPELINE = os.environ.get("HUNYUAN_KEEP_TEXTURE_PIPELINE", "0").strip().lower() in {
+KEEP_TEXTURE_PIPELINE = os.environ.get("HUNYUAN_KEEP_TEXTURE_PIPELINE", "1").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -48,7 +49,7 @@ KEEP_TEXTURE_PIPELINE = os.environ.get("HUNYUAN_KEEP_TEXTURE_PIPELINE", "0").str
 }
 
 WORK_DIR.mkdir(parents=True, exist_ok=True)
-app = FastAPI(title="Hunyuan Colab Worker")
+app = FastAPI(title="Hunyuan VM Production Worker")
 _shape_pipeline = None
 _texture_pipeline = None
 _busy_lock = Lock()
@@ -58,7 +59,7 @@ _jobs_lock = Lock()
 _jobs = {}
 
 
-def start_busy(job_name: str):
+def start_busy(job_name: str) -> None:
     global _busy_job
     global _busy_started_at
     if not _busy_lock.acquire(blocking=False):
@@ -70,7 +71,7 @@ def start_busy(job_name: str):
     _busy_started_at = time.time()
 
 
-def finish_busy():
+def finish_busy() -> None:
     global _busy_job
     global _busy_started_at
     _busy_job = None
@@ -78,7 +79,7 @@ def finish_busy():
     _busy_lock.release()
 
 
-def busy_payload():
+def busy_payload() -> dict:
     return {
         "busy": _busy_lock.locked(),
         "busy_job": _busy_job,
@@ -86,19 +87,19 @@ def busy_payload():
     }
 
 
-def update_job(job_id: str, **values):
+def update_job(job_id: str, **values) -> None:
     with _jobs_lock:
         job = _jobs.setdefault(job_id, {"job_id": job_id})
         job.update(values)
 
 
-def get_job(job_id: str):
+def get_job(job_id: str) -> dict | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job else None
 
 
-def public_job(job_id: str):
+def public_job(job_id: str) -> dict:
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -115,7 +116,7 @@ def public_job(job_id: str):
     }
 
 
-def start_background_job(job_id: str, kind: str, job_name: str, target, *args):
+def start_background_job(job_id: str, kind: str, job_name: str, target, *args) -> dict:
     start_busy(job_name)
     update_job(
         job_id,
@@ -127,15 +128,10 @@ def start_background_job(job_id: str, kind: str, job_name: str, target, *args):
         completed_at=None,
     )
 
-    def runner():
+    def runner() -> None:
         try:
             output_path = target(*args)
-            update_job(
-                job_id,
-                status="done",
-                output_path=str(output_path),
-                completed_at=time.time(),
-            )
+            update_job(job_id, status="done", output_path=str(output_path), completed_at=time.time())
         except BaseException as exc:
             update_job(
                 job_id,
@@ -144,6 +140,7 @@ def start_background_job(job_id: str, kind: str, job_name: str, target, *args):
                 traceback=traceback.format_exc(),
                 completed_at=time.time(),
             )
+            traceback.print_exc()
         finally:
             finish_busy()
 
@@ -151,7 +148,7 @@ def start_background_job(job_id: str, kind: str, job_name: str, target, *args):
     return public_job(job_id)
 
 
-def cleanup_memory():
+def cleanup_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -165,13 +162,14 @@ def cleanup_memory():
         pass
 
 
-def memory_payload(prefix: str = "memory"):
+def memory_payload(prefix: str = "memory") -> dict:
     payload = {}
     try:
         import psutil
 
         ram = psutil.virtual_memory()
         payload[f"{prefix}_ram_used_gb"] = round(ram.used / 1024**3, 2)
+        payload[f"{prefix}_ram_available_gb"] = round(ram.available / 1024**3, 2)
         payload[f"{prefix}_ram_total_gb"] = round(ram.total / 1024**3, 2)
     except Exception:
         pass
@@ -193,16 +191,15 @@ def ram_available_gb() -> float | None:
         return None
 
 
-def require_texture_ram_headroom():
+def require_texture_ram_headroom() -> None:
     cleanup_memory()
     available = ram_available_gb()
     if available is None:
         return
     if available < MIN_TEXTURE_RAM_FREE_GB:
         raise RuntimeError(
-            "Not enough Colab system RAM to safely load Hunyuan3D Paint. "
-            f"Available={available:.2f}GB, required>={MIN_TEXTURE_RAM_FREE_GB:.2f}GB. "
-            "Restart the Colab runtime or skip texture on Colab Free."
+            "Not enough VM system RAM to safely load Hunyuan3D Paint. "
+            f"Available={available:.2f}GB, required>={MIN_TEXTURE_RAM_FREE_GB:.2f}GB."
         )
 
 
@@ -239,9 +236,7 @@ def load_pipeline_with_fallback(
         base_kwargs["use_safetensors"] = True
     if subfolder:
         base_kwargs["subfolder"] = subfolder
-    minimal_kwargs = {}
-    if subfolder:
-        minimal_kwargs["subfolder"] = subfolder
+    minimal_kwargs = {"subfolder": subfolder} if subfolder else {}
 
     optimized_kwargs = dict(base_kwargs)
     dtype = configured_torch_dtype(dtype_name)
@@ -265,14 +260,23 @@ def load_pipeline_with_fallback(
             if move_after_load:
                 pipeline = move_pipeline_to_device(pipeline, device)
             return pipeline
-        except TypeError as exc:
-            last_exc = exc
-            cleanup_memory()
-        except RuntimeError as exc:
+        except (TypeError, RuntimeError, ValueError) as exc:
             last_exc = exc
             cleanup_memory()
 
     raise RuntimeError(f"Could not load pipeline {model_id}: {last_exc}") from last_exc
+
+
+def import_texture_dependencies() -> None:
+    try:
+        import custom_rasterizer  # noqa: F401
+        import mesh_processor  # noqa: F401
+    except BaseException as exc:
+        raise RuntimeError(
+            "Texture native extensions are not importable. "
+            "Rebuild custom_rasterizer and differentiable_renderer in the active venv. "
+            f"Original error: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def get_shape_pipeline():
@@ -283,10 +287,10 @@ def get_shape_pipeline():
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail="Hunyuan shape dependencies are not ready. Re-run the install cells and check worker logs.",
+                detail=f"Hunyuan shape dependencies are not ready: {type(exc).__name__}: {exc}",
             ) from exc
 
-        print(f"Loading shape model {MODEL_ID}/{MODEL_SUBFOLDER} with low-memory settings...")
+        print(f"Loading shape model {MODEL_ID}/{MODEL_SUBFOLDER} ...", flush=True)
         cleanup_memory()
         _shape_pipeline = load_pipeline_with_fallback(
             Hunyuan3DDiTFlowMatchingPipeline,
@@ -301,34 +305,36 @@ def get_texture_pipeline():
     global _texture_pipeline
     if _texture_pipeline is None:
         try:
+            import_texture_dependencies()
             from hy3dgen.texgen import Hunyuan3DPaintPipeline
-        except Exception as exc:
+        except BaseException as exc:
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "Hunyuan texture dependencies are not ready. Install the official "
-                    "texgen custom_rasterizer and differentiable_renderer modules."
-                ),
+                detail=f"Hunyuan texture dependencies are not ready: {type(exc).__name__}: {exc}",
             ) from exc
 
-        print(f"Loading texture model {TEXGEN_MODEL_ID} with low-memory settings...")
+        print(f"Loading texture model {TEXGEN_MODEL_ID} ...", flush=True)
         cleanup_memory()
-        _texture_pipeline = load_pipeline_with_fallback(
-            Hunyuan3DPaintPipeline,
-            TEXGEN_MODEL_ID,
-            dtype_name=TEXTURE_TORCH_DTYPE,
-            use_safetensors=False,
-        )
+        try:
+            _texture_pipeline = load_pipeline_with_fallback(
+                Hunyuan3DPaintPipeline,
+                TEXGEN_MODEL_ID,
+                dtype_name=TEXTURE_TORCH_DTYPE,
+                use_safetensors=False,
+            )
+        except BaseException as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Texture pipeline load failed: {type(exc).__name__}: {exc}") from exc
     return _texture_pipeline
 
 
-def unload_shape_pipeline():
+def unload_shape_pipeline() -> None:
     global _shape_pipeline
     _shape_pipeline = None
     cleanup_memory()
 
 
-def unload_texture_pipeline():
+def unload_texture_pipeline() -> None:
     global _texture_pipeline
     _texture_pipeline = None
     cleanup_memory()
@@ -342,7 +348,7 @@ def read_image(image_bytes: bytes) -> Image.Image:
 
 
 @app.get("/health")
-def health():
+def health() -> dict:
     return {
         "status": "ok",
         "cuda_available": torch.cuda.is_available(),
@@ -352,14 +358,39 @@ def health():
         "texgen_model_id": TEXGEN_MODEL_ID,
         "shape_pipeline_loaded": _shape_pipeline is not None,
         "texture_pipeline_loaded": _texture_pipeline is not None,
-        "min_texture_ram_free_gb": MIN_TEXTURE_RAM_FREE_GB,
-        "cuda_memory_allocated_mb": (
-            round(torch.cuda.memory_allocated() / 1024 / 1024, 1) if torch.cuda.is_available() else None
-        ),
-        "cuda_memory_reserved_mb": (
-            round(torch.cuda.memory_reserved() / 1024 / 1024, 1) if torch.cuda.is_available() else None
-        ),
+        "python": sys.version,
+        **memory_payload("memory"),
         **busy_payload(),
+    }
+
+
+@app.get("/diagnostics")
+def diagnostics() -> dict:
+    import importlib.metadata as metadata
+
+    packages = {}
+    for name in ["torch", "torchvision", "diffusers", "transformers", "huggingface_hub", "accelerate", "xformers"]:
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            packages[name] = None
+
+    imports = {}
+    for module in ["custom_rasterizer", "mesh_processor", "hy3dgen.texgen", "hy3dgen.shapegen"]:
+        try:
+            __import__(module)
+            imports[module] = "ok"
+        except BaseException as exc:
+            imports[module] = f"{type(exc).__name__}: {exc}"
+
+    return {
+        "status": "ok",
+        "packages": packages,
+        "imports": imports,
+        "torch_file": torch.__file__,
+        "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+        "cuda_home": os.environ.get("CUDA_HOME"),
+        **health(),
     }
 
 
@@ -368,7 +399,7 @@ def cleanup_memory_endpoint(
     unload_shape: bool = True,
     unload_texture: bool = True,
     clear_jobs: bool = False,
-):
+) -> dict:
     global _shape_pipeline
     global _texture_pipeline
     if _busy_lock.locked():
@@ -398,12 +429,12 @@ def cleanup_memory_endpoint(
 
 
 @app.get("/jobs/{job_id}")
-def job_status(job_id: str):
+def job_status(job_id: str) -> dict:
     return public_job(job_id)
 
 
 @app.get("/jobs/{job_id}/mesh")
-def job_mesh(job_id: str):
+def job_mesh(job_id: str) -> Response:
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -416,7 +447,7 @@ def job_mesh(job_id: str):
 
 
 @app.post("/warmup")
-def warmup():
+def warmup() -> dict:
     start_busy("warmup-shape")
     try:
         get_shape_pipeline()
@@ -426,12 +457,18 @@ def warmup():
 
 
 @app.post("/warmup-texture")
-def warmup_texture():
+def warmup_texture() -> dict:
     start_busy("warmup-texture")
     try:
         require_texture_ram_headroom()
         get_texture_pipeline()
         return health()
+    except HTTPException:
+        raise
+    except BaseException as exc:
+        traceback.print_exc()
+        cleanup_memory()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
     finally:
         finish_busy()
 
@@ -461,7 +498,7 @@ def generate_shape_mesh(pil_image: Image.Image):
         )[0]
 
 
-def validate_glb_output(output_format: str):
+def validate_glb_output(output_format: str) -> None:
     if output_format.lower() != "glb":
         raise HTTPException(status_code=400, detail="Only glb output is supported.")
 
@@ -515,11 +552,7 @@ def run_texture_job(pil_image: Image.Image, mesh_path: Path, job_dir: Path) -> P
         texture_pipeline = get_texture_pipeline()
         with torch.inference_mode():
             textured_mesh = texture_pipeline(input_mesh, image=pil_image.convert("RGB"))
-    except RuntimeError as exc:
-        cleanup_memory()
-        raise HTTPException(status_code=500, detail=f"Hunyuan texture generation failed: {exc}") from exc
 
-    try:
         output_path = job_dir / "mesh.glb"
         textured_mesh.export(output_path)
         return output_path
@@ -550,11 +583,7 @@ def run_textured_shape_job(pil_image: Image.Image, job_dir: Path) -> Path:
         texture_pipeline = get_texture_pipeline()
         with torch.inference_mode():
             textured_mesh = texture_pipeline(mesh, image=pil_image.convert("RGB"))
-    except RuntimeError as exc:
-        cleanup_memory()
-        raise HTTPException(status_code=500, detail=f"Hunyuan texture generation failed: {exc}") from exc
 
-    try:
         output_path = job_dir / "mesh.glb"
         textured_mesh.export(output_path)
         return output_path
@@ -574,7 +603,7 @@ async def generate_shape(
     image: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> Response:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
 
@@ -591,7 +620,7 @@ async def start_shape(
     image: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> dict:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
     return start_background_job(job_id, "shape", f"shape:{job_id}", run_shape_job, pil_image, job_dir)
@@ -603,7 +632,7 @@ async def generate_texture(
     mesh: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> Response:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
 
@@ -628,7 +657,7 @@ async def start_texture(
     mesh: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> dict:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
 
@@ -646,7 +675,7 @@ async def generate_textured_shape(
     image: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> Response:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
 
@@ -663,7 +692,7 @@ async def start_textured_shape(
     image: UploadFile = File(...),
     job_id: str = Form(...),
     output_format: str = Form(default="glb"),
-):
+) -> dict:
     validate_glb_output(output_format)
     pil_image, job_dir = await prepare_job_image(image, job_id)
     return start_background_job(

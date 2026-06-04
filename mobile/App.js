@@ -26,6 +26,8 @@ const DETECT_UPLOAD_COMPRESS = 0.65;
 const DETECT_COOLDOWN_MS = 350;
 const DETECT_EMPTY_HOLD_MS = 900;
 const RECON_CAPTURE_QUALITY = 0.92;
+const TEXTURE_POLL_INTERVAL_MS = 5000;
+const TEXTURE_POLL_TIMEOUT_MS = 45 * 60 * 1000;
 const AR_MODEL_TITLE = 'Recon 3D Model';
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
@@ -45,6 +47,14 @@ const buildAndroidSceneViewerUrl = (modelUrl, title = AR_MODEL_TITLE) => {
     + '#Intent;scheme=https;package=com.google.android.googlequicksearchbox;'
     + `action=android.intent.action.VIEW;S.browser_fallback_url=${encodedFallbackUrl};end;`
   );
+};
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const shortErrorMessage = (message) => {
+  if (!message) {
+    return 'Unknown error';
+  }
+  return String(message).replace(/\s+/g, ' ').slice(0, 240);
 };
 
 export default function App() {
@@ -366,11 +376,31 @@ export default function App() {
         throw new Error(errorText || `HTTP ${response.status}`);
       }
 
-      const payload = await response.json();
+      let payload = await response.json();
+      if (payload.status !== 'done') {
+        const statusPath = payload.status_url || `/texture-jobs/${jobId}`;
+        const startedAt = Date.now();
+        while (payload.status !== 'done') {
+          if (payload.status === 'error') {
+            throw new Error(typeof payload.error === 'string' ? payload.error : JSON.stringify(payload.error));
+          }
+          if (Date.now() - startedAt > TEXTURE_POLL_TIMEOUT_MS) {
+            throw new Error('Texture paint timed out while waiting for backend status.');
+          }
+          setCameraStatus(`Painting texture... ${payload.status || 'running'}`);
+          await delay(TEXTURE_POLL_INTERVAL_MS);
+          const statusResponse = await fetch(`${API_BASE_URL}${statusPath}`);
+          if (!statusResponse.ok) {
+            const errorText = await statusResponse.text();
+            throw new Error(errorText || `HTTP ${statusResponse.status}`);
+          }
+          payload = await statusResponse.json();
+        }
+      }
       setReconstructionResult(payload.reconstruction || null);
       setCameraStatus('Texture painted. Textured GLB is ready.');
     } catch (error) {
-      setCameraStatus(`Texture paint failed: ${error.message}`);
+      setCameraStatus(`Texture paint failed: ${shortErrorMessage(error.message)}`);
     } finally {
       setIsPaintingTexture(false);
     }
