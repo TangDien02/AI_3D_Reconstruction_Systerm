@@ -30,8 +30,6 @@ python -m pip install --no-cache-dir -r requirements.txt
 python scripts/verify_runtime.py
 
 cat > "$REPO_DIR/backend.env" <<EOF
-TRIPOSR_REPO_DIR=$REPO_DIR/project/external/TripoSR
-TRIPOSR_MODEL_SAVE_FORMAT=glb
 RECONSTRUCTION_BACKEND=hunyuan_remote
 HUNYUAN_REMOTE_URL=$HUNYUAN_REMOTE_URL
 HUNYUAN_REMOTE_OUTPUT_FORMAT=glb

@@ -20,6 +20,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+from server.services.image_cleaner import clean_object_image
+from server.utils.image_crop import ImageCropError, crop_user_bbox
 
 app = FastAPI(title="3DRecon API")
 app.add_middleware(
@@ -40,6 +42,24 @@ UPLOAD_DIR = SERVER_DIR / "uploads"
 MODEL_OUTPUT_DIR = SERVER_DIR / "models"
 SEGMENT_OUTPUT_DIR = SERVER_DIR / "segment_outputs"
 YOLO_WEIGHTS = SERVER_DIR / "weights" / "yolo26n-seg.pt"
+
+
+def load_local_env_files() -> None:
+    for path in (REPO_DIR / ".env", REPO_DIR / ".env.local"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_local_env_files()
 
 
 def env_float(name: str, default: float) -> float:
@@ -70,23 +90,17 @@ DETECTION_IOU = env_float("YOLO_DETECTION_IOU", 0.45)
 MODEL_INPUT_IMAGE_SIZE = env_int("RECON_MODEL_INPUT_IMAGE_SIZE", 224)
 MODEL_INPUT_MARGIN_RATIO = env_float("RECON_MODEL_INPUT_MARGIN_RATIO", 0.08)
 MODEL_INPUT_MIN_MARGIN_PX = env_int("RECON_MODEL_INPUT_MIN_MARGIN_PX", 8)
-TRIPOSR_MODEL_NAME_OR_PATH = os.environ.get("TRIPOSR_MODEL_NAME_OR_PATH", "stabilityai/TripoSR")
-TRIPOSR_REPO_DIR = os.environ.get("TRIPOSR_REPO_DIR")
-TRIPOSR_DEVICE = os.environ.get("TRIPOSR_DEVICE", "auto")
-TRIPOSR_CHUNK_SIZE = env_int("TRIPOSR_CHUNK_SIZE", 8192)
-TRIPOSR_MC_RESOLUTION = env_int("TRIPOSR_MC_RESOLUTION", 256)
-TRIPOSR_FOREGROUND_RATIO = env_float("TRIPOSR_FOREGROUND_RATIO", 0.85)
-TRIPOSR_NUM_POINTS = env_int("TRIPOSR_NUM_POINTS", 2048)
-TRIPOSR_MODEL_SAVE_FORMAT = os.environ.get("TRIPOSR_MODEL_SAVE_FORMAT", "glb").lower()
-TRIPOSR_REMOVE_BACKGROUND = env_bool("TRIPOSR_REMOVE_BACKGROUND", True)
-TRIPOSR_SAVE_PREVIEW = env_bool("TRIPOSR_SAVE_PREVIEW", True)
-TRIPOSR_CROP_MARGIN_RATIO = env_float("TRIPOSR_CROP_MARGIN_RATIO", 0.16)
-TRIPOSR_CROP_MIN_MARGIN_PX = env_int("TRIPOSR_CROP_MIN_MARGIN_PX", 16)
-RECONSTRUCTION_BACKEND = os.environ.get("RECONSTRUCTION_BACKEND", "triposr").strip().lower()
+RECON_CROP_MARGIN_RATIO = env_float("RECON_CROP_MARGIN_RATIO", 0.16)
+RECON_CROP_MIN_MARGIN_PX = env_int("RECON_CROP_MIN_MARGIN_PX", 16)
+RECONSTRUCTION_BACKEND = os.environ.get("RECONSTRUCTION_BACKEND", "hunyuan_remote").strip().lower()
 HUNYUAN_REMOTE_URL = os.environ.get("HUNYUAN_REMOTE_URL", "").strip().rstrip("/")
 HUNYUAN_REMOTE_TIMEOUT_SECONDS = env_int("HUNYUAN_REMOTE_TIMEOUT_SECONDS", 900)
 HUNYUAN_REMOTE_OUTPUT_FORMAT = os.environ.get("HUNYUAN_REMOTE_OUTPUT_FORMAT", "glb").strip().lower()
 HUNYUAN_REMOTE_ENABLE_TEXTURE = env_bool("HUNYUAN_REMOTE_ENABLE_TEXTURE", False)
+IMAGE_CLEANER_BACKEND = os.environ.get("IMAGE_CLEANER_BACKEND", "auto").strip().lower()
+ENABLE_REMBG_CLEANER = env_bool("ENABLE_REMBG_CLEANER", True)
+CLEAN_IMAGE_MAX_SIDE = env_int("CLEAN_IMAGE_MAX_SIDE", 1536)
+CLEAN_IMAGE_PAD_RATIO = env_float("CLEAN_IMAGE_PAD_RATIO", 0.08)
 AR_USDZ_ENABLED = env_bool("AR_USDZ_ENABLED", True)
 AR_USDZ_TIMEOUT_SECONDS = env_int("AR_USDZ_TIMEOUT_SECONDS", 180)
 BLENDER_PATH = os.environ.get("BLENDER_PATH")
@@ -98,8 +112,8 @@ app.mount("/models", StaticFiles(directory=MODEL_OUTPUT_DIR), name="models")
 
 _yolo_model = None
 _yolo_model_lock = Lock()
-_triposr_core = None
-_triposr_core_lock = Lock()
+_reconstruction_jobs: dict[str, dict] = {}
+_reconstruction_jobs_lock = Lock()
 _texture_jobs: dict[str, dict] = {}
 _texture_jobs_lock = Lock()
 
@@ -140,51 +154,6 @@ def get_yolo_model():
             except Exception:
                 pass
     return _yolo_model
-
-
-def build_triposr_config():
-    try:
-        from src.reconstruction.triposr_runner import TripoSRConfig
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"TripoSR core is not importable: {exc}",
-        ) from exc
-
-    return TripoSRConfig(
-        model_name_or_path=TRIPOSR_MODEL_NAME_OR_PATH,
-        triposr_repo_dir=TRIPOSR_REPO_DIR,
-        device=TRIPOSR_DEVICE,
-        chunk_size=TRIPOSR_CHUNK_SIZE,
-        mc_resolution=TRIPOSR_MC_RESOLUTION,
-        foreground_ratio=TRIPOSR_FOREGROUND_RATIO,
-        remove_background=TRIPOSR_REMOVE_BACKGROUND,
-        num_points=TRIPOSR_NUM_POINTS,
-        model_save_format=TRIPOSR_MODEL_SAVE_FORMAT,
-        normalize_points=True,
-    )
-
-
-def get_triposr_core():
-    global _triposr_core
-
-    if _triposr_core is not None:
-        return _triposr_core
-
-    with _triposr_core_lock:
-        if _triposr_core is None:
-            try:
-                from src.reconstruction.triposr_runner import TripoSRCore
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"TripoSR dependencies are not ready: {exc}",
-                ) from exc
-            try:
-                _triposr_core = TripoSRCore(config=build_triposr_config())
-            except Exception as exc:
-                raise HTTPException(status_code=503, detail=f"TripoSR init failed: {exc}") from exc
-    return _triposr_core
 
 
 def clamp_bbox_xyxy(
@@ -589,7 +558,7 @@ def build_segment_model_input(
     return model_input, model_input_mask, metadata
 
 
-def build_triposr_crop_input(
+def build_reconstruction_crop_input(
     pil_image: Image.Image,
     selected_xyxy: tuple[float, float, float, float],
 ) -> tuple[Image.Image, dict]:
@@ -598,19 +567,19 @@ def build_triposr_crop_input(
         selected_xyxy,
         image_width=image_width,
         image_height=image_height,
-        margin_ratio=TRIPOSR_CROP_MARGIN_RATIO,
-        min_margin_px=TRIPOSR_CROP_MIN_MARGIN_PX,
+        margin_ratio=RECON_CROP_MARGIN_RATIO,
+        min_margin_px=RECON_CROP_MIN_MARGIN_PX,
     )
     crop_box = bbox_to_crop_box(expanded_bbox, image_width, image_height)
     crop = pil_image.crop(crop_box).convert("RGB")
     metadata = {
-        "mode": "bbox_crop_for_triposr_rembg",
+        "mode": "bbox_crop_for_reconstruction",
         "crop_strategy": "yolo_bbox_with_margin",
-        "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
-        "margin_ratio": TRIPOSR_CROP_MARGIN_RATIO,
-        "min_margin_px": TRIPOSR_CROP_MIN_MARGIN_PX,
+        "background_handling": "hunyuan_worker",
+        "margin_ratio": RECON_CROP_MARGIN_RATIO,
+        "min_margin_px": RECON_CROP_MIN_MARGIN_PX,
         "base_bbox": crop_box_payload(bbox_to_crop_box(selected_xyxy, image_width, image_height)),
-        "triposr_crop_bbox": crop_box_payload(crop_box),
+        "reconstruction_crop_bbox": crop_box_payload(crop_box),
     }
     return crop, metadata
 
@@ -633,7 +602,7 @@ def save_segment_artifacts(
     full_mask = make_mask_from_polygon(polygon, image_width, image_height, selected_xyxy)
 
     crop, mask_crop, masked_crop, transparent_crop = compose_masked_crop(pil_image, full_mask, crop_box)
-    triposr_crop, triposr_crop_metadata = build_triposr_crop_input(
+    reconstruction_crop, reconstruction_crop_metadata = build_reconstruction_crop_input(
         pil_image=pil_image,
         selected_xyxy=selected_xyxy,
     )
@@ -654,7 +623,7 @@ def save_segment_artifacts(
     original_path = segment_dir / "original.jpg"
     mask_path = segment_dir / "mask.png"
     crop_path = segment_dir / "crop.jpg"
-    triposr_crop_path = segment_dir / "triposr_crop.jpg"
+    reconstruction_crop_path = segment_dir / "reconstruction_crop.jpg"
     masked_crop_path = segment_dir / "masked_crop.png"
     transparent_crop_path = segment_dir / "transparent_crop.png"
     model_input_path = segment_dir / "model_input.png"
@@ -664,7 +633,7 @@ def save_segment_artifacts(
     pil_image.save(original_path, quality=92)
     full_mask.save(mask_path)
     crop.save(crop_path, quality=92)
-    triposr_crop.save(triposr_crop_path, quality=94)
+    reconstruction_crop.save(reconstruction_crop_path, quality=94)
     masked_crop.save(masked_crop_path)
     transparent_crop.save(transparent_crop_path)
     model_input.save(model_input_path)
@@ -690,7 +659,7 @@ def save_segment_artifacts(
             "original": to_relative_url(original_path),
             "mask": to_relative_url(mask_path),
             "crop": to_relative_url(crop_path),
-            "triposr_crop": to_relative_url(triposr_crop_path),
+            "reconstruction_input": to_relative_url(reconstruction_crop_path),
             "masked_crop": to_relative_url(masked_crop_path),
             "transparent_crop": to_relative_url(transparent_crop_path),
             "model_input": to_relative_url(model_input_path),
@@ -702,7 +671,7 @@ def save_segment_artifacts(
             "original": str(original_path),
             "mask": str(mask_path),
             "crop": str(crop_path),
-            "triposr_crop": str(triposr_crop_path),
+            "reconstruction_input": str(reconstruction_crop_path),
             "masked_crop": str(masked_crop_path),
             "transparent_crop": str(transparent_crop_path),
             "model_input": str(model_input_path),
@@ -711,115 +680,222 @@ def save_segment_artifacts(
         },
         "preprocessing": {
             "legacy_model_input": model_input_metadata,
-            "triposr_input": triposr_crop_metadata,
+            "reconstruction_input": reconstruction_crop_metadata,
         },
     }
     write_json(segment_dir / "segment_summary.json", segment_payload)
-    return segment_payload, triposr_crop_path
+    return segment_payload, reconstruction_crop_path
 
 
 def save_reconstruction_artifacts(input_path: Path, job_id: str, label: str | None = None) -> dict:
     if RECONSTRUCTION_BACKEND == "hunyuan_remote":
         return save_hunyuan_remote_artifacts(input_path, job_id, label=label)
-
-    try:
-        from src.reconstruction.triposr_runner import TripoSRDependencyError
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"TripoSR core dependencies are not ready: {exc}",
-        ) from exc
-
-    try:
-        result = get_triposr_core().reconstruct_image(
-            image_path=input_path,
-            output_dir=MODEL_OUTPUT_DIR,
-            name=job_id,
-            save_preview=TRIPOSR_SAVE_PREVIEW,
-        )
-    except TripoSRDependencyError as exc:
-        raise HTTPException(status_code=503, detail=f"TripoSR dependencies are not ready: {exc}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"TripoSR reconstruction failed: {exc}") from exc
-
-    mesh_format = result.summary.get("mesh", {}).get("format", TRIPOSR_MODEL_SAVE_FORMAT)
-    mesh_url = to_model_url(result.mesh_path)
-    colored_mesh_url = to_model_url(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None
-    preview_url = to_model_url(result.preview_path) if result.preview_path else None
-    mesh_usdz_path, mesh_usdz_status = convert_glb_to_usdz(result.mesh_path) if mesh_format == "glb" else (
-        None,
-        {
-            "enabled": AR_USDZ_ENABLED,
-            "format": "usdz",
-            "converted": False,
-            "reason": "requires_glb_export",
-        },
+    raise HTTPException(
+        status_code=400,
+        detail="Only RECONSTRUCTION_BACKEND=hunyuan_remote is supported. TripoSR has been removed.",
     )
-    mesh_usdz_url = to_model_url(mesh_usdz_path) if mesh_usdz_path else None
+
+
+def save_bbox_preprocess_artifacts(
+    pil_image: Image.Image,
+    job_id: str,
+    *,
+    bbox_x: float,
+    bbox_y: float,
+    bbox_width: float,
+    bbox_height: float,
+    stage_callback=None,
+) -> tuple[dict, Path]:
+    sample_dir = MODEL_OUTPUT_DIR / job_id
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    original_path = sample_dir / "input_original.png"
+    crop_path = sample_dir / "input_crop.png"
+    clean_image_path = sample_dir / "clean_image.png"
+    input_path = sample_dir / "input.png"
+    summary_path = sample_dir / "preprocess_summary.json"
+
+    if stage_callback:
+        stage_callback("cropping")
+    pil_image.convert("RGB").save(original_path)
+    try:
+        crop_result = crop_user_bbox(
+            pil_image,
+            bbox_x,
+            bbox_y,
+            bbox_width,
+            bbox_height,
+            margin_ratio=RECON_CROP_MARGIN_RATIO,
+            min_margin_px=RECON_CROP_MIN_MARGIN_PX,
+            max_input_side=CLEAN_IMAGE_MAX_SIDE,
+            pad_to_square=False,
+        )
+    except ImageCropError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    crop_result.crop.save(crop_path)
+
+    if stage_callback:
+        stage_callback("cleaning")
+    clean_result = clean_object_image(
+        crop_result.crop,
+        backend=IMAGE_CLEANER_BACKEND,
+        enable_rembg=ENABLE_REMBG_CLEANER,
+        max_side=CLEAN_IMAGE_MAX_SIDE,
+        pad_ratio=CLEAN_IMAGE_PAD_RATIO,
+    )
+    clean_result.clean_image.convert("RGB").save(clean_image_path)
+    clean_result.input_image.convert("RGB").save(input_path)
+    if not input_path.is_file():
+        raise HTTPException(status_code=500, detail="Clean reconstruction input image was not saved.")
 
     payload = {
         "job_id": job_id,
-        "label": label,
-        "backend": "triposr",
-        "output_dir": str(result.output_dir),
-        "input_image": str(input_path),
-        "num_points": int(result.points.shape[0]),
-        "model": {
-            "name": TRIPOSR_MODEL_NAME_OR_PATH,
-            "type": "triposr",
-            "device": result.summary.get("runtime", {}).get("device"),
-            "remove_background": TRIPOSR_REMOVE_BACKGROUND,
-            "mc_resolution": TRIPOSR_MC_RESOLUTION,
-            "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
-        },
-        "mesh": result.summary.get("mesh", {}),
-        "ar": {
-            "android": {
-                "format": "glb",
-                "viewer": "scene_viewer",
-                "ready": mesh_format == "glb",
-            },
-            "ios": {
-                "format": "usdz",
-                "viewer": "quick_look",
-                "ready": mesh_usdz_path is not None,
-            },
-            "usdz": mesh_usdz_status,
-        },
+        "status": "done",
+        "output_dir": str(sample_dir),
+        "bbox": crop_result.metadata.get("requested_bbox"),
+        "cleaner_requested": clean_result.metadata.get("cleaner_requested"),
+        "cleaner_used": clean_result.metadata.get("cleaner_used"),
+        "fallback_chain": clean_result.metadata.get("fallback_chain", []),
+        "warnings": clean_result.metadata.get("warnings", []),
+        "errors": clean_result.metadata.get("errors", []),
         "files": {
-            "input_image": to_model_url(result.input_path),
-            "triposr_input": to_model_url(result.processed_input_path),
-            "pointcloud_npy": to_model_url(result.pointcloud_npy_path),
-            "pointcloud_ply": to_model_url(result.pointcloud_ply_path),
-            "mesh": mesh_url,
-            "mesh_glb": mesh_url if mesh_format == "glb" else None,
-            "mesh_obj": mesh_url if mesh_format == "obj" else None,
-            "mesh_usdz": mesh_usdz_url,
-            "ar_usdz": mesh_usdz_url,
-            "mesh_colored_ply": colored_mesh_url,
-            "preview_png": preview_url,
-            "summary_json": to_model_url(result.output_dir / "reconstruction_summary.json"),
-            "triposr_summary_json": to_model_url(result.summary_path),
+            "input_original": to_model_url(original_path),
+            "input_crop": to_model_url(crop_path),
+            "clean_image": to_model_url(clean_image_path),
+            "input": to_model_url(input_path),
+            "preprocess_summary": to_model_url(summary_path),
         },
         "paths": {
-            "output_dir": str(result.output_dir),
-            "input_image": str(input_path),
-            "triposr_input": str(result.processed_input_path),
-            "pointcloud_npy": str(result.pointcloud_npy_path),
-            "pointcloud_ply": str(result.pointcloud_ply_path),
-            "mesh": str(result.mesh_path),
-            "mesh_glb": str(result.mesh_path) if mesh_format == "glb" else None,
-            "mesh_obj": str(result.mesh_path) if mesh_format == "obj" else None,
-            "mesh_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
-            "ar_usdz": str(mesh_usdz_path) if mesh_usdz_path else None,
-            "mesh_colored_ply": str(result.colored_mesh_ply_path) if result.colored_mesh_ply_path else None,
-            "preview_png": str(result.preview_path) if result.preview_path else None,
-            "summary_json": str(result.output_dir / "reconstruction_summary.json"),
-            "triposr_summary_json": str(result.summary_path),
+            "output_dir": str(sample_dir),
+            "input_original": str(original_path),
+            "input_crop": str(crop_path),
+            "clean_image": str(clean_image_path),
+            "input": str(input_path),
+            "preprocess_summary": str(summary_path),
+        },
+        "preprocessing": {
+            "mode": "user_bbox_local_clean",
+            "crop": crop_result.metadata,
+            "cleaner": clean_result.metadata,
         },
     }
-    write_json(result.output_dir / "reconstruction_summary.json", payload)
-    return payload
+    write_json(summary_path, payload)
+    return payload, input_path
+
+
+def merge_preprocess_into_reconstruction(reconstruction: dict, preprocess: dict) -> dict:
+    reconstruction.setdefault("files", {}).update(
+        {
+            "input_original": preprocess["files"].get("input_original"),
+            "input_crop": preprocess["files"].get("input_crop"),
+            "clean_image": preprocess["files"].get("clean_image"),
+            "input": preprocess["files"].get("input"),
+            "preprocess_summary": preprocess["files"].get("preprocess_summary"),
+        }
+    )
+    reconstruction.setdefault("paths", {}).update(
+        {
+            "input_original": preprocess["paths"].get("input_original"),
+            "input_crop": preprocess["paths"].get("input_crop"),
+            "clean_image": preprocess["paths"].get("clean_image"),
+            "input": preprocess["paths"].get("input"),
+            "preprocess_summary": preprocess["paths"].get("preprocess_summary"),
+        }
+    )
+    reconstruction["preprocess"] = preprocess.get("preprocessing", {})
+    summary_path = reconstruction.get("paths", {}).get("summary_json")
+    if summary_path:
+        write_json(Path(summary_path), reconstruction)
+    return reconstruction
+
+
+def set_reconstruction_job(job_id: str, payload: dict) -> None:
+    with _reconstruction_jobs_lock:
+        current = _reconstruction_jobs.get(job_id, {})
+        current.update(payload)
+        current["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        _reconstruction_jobs[job_id] = current
+
+
+def get_reconstruction_job(job_id: str) -> dict | None:
+    with _reconstruction_jobs_lock:
+        job = _reconstruction_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def reconstruction_response(job_id: str, preprocess: dict, reconstruction: dict) -> dict:
+    return {
+        "job_id": job_id,
+        "status": "done",
+        "backend": reconstruction.get("backend"),
+        "preprocess": preprocess,
+        "preprocessing": preprocess.get("preprocessing"),
+        "model_url": (
+            reconstruction.get("files", {}).get("mesh_glb")
+            or reconstruction.get("files", {}).get("mesh")
+        ),
+        "files": reconstruction.get("files", {}),
+        "paths": reconstruction.get("paths", {}),
+        "ar": reconstruction.get("ar"),
+        "reconstruction": reconstruction,
+    }
+
+
+def run_reconstruct_bbox_job(
+    pil_image: Image.Image,
+    job_id: str,
+    bbox_payload: dict,
+) -> None:
+    def update_stage(stage: str) -> None:
+        set_reconstruction_job(job_id, {"job_id": job_id, "status": "running", "stage": stage})
+
+    try:
+        update_stage("cropping")
+        preprocess, clean_path = save_bbox_preprocess_artifacts(
+            pil_image,
+            job_id,
+            bbox_x=bbox_payload["bbox_x"],
+            bbox_y=bbox_payload["bbox_y"],
+            bbox_width=bbox_payload["bbox_width"],
+            bbox_height=bbox_payload["bbox_height"],
+            stage_callback=update_stage,
+        )
+        update_stage("generating_texture" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "generating_shape")
+        reconstruction = save_reconstruction_artifacts(clean_path, job_id, label="user_bbox")
+        reconstruction = merge_preprocess_into_reconstruction(reconstruction, preprocess)
+        set_reconstruction_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "completed",
+                "stage": "completed",
+                "result": reconstruction_response(job_id, preprocess, reconstruction),
+                "error": None,
+            },
+        )
+    except HTTPException as exc:
+        set_reconstruction_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "stage": "failed",
+                "error": exc.detail,
+                "status_code": exc.status_code,
+            },
+        )
+    except Exception as exc:
+        set_reconstruction_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "stage": "failed",
+                "error": str(exc),
+                "status_code": 500,
+            },
+        )
 
 
 def wait_for_hunyuan_job(client: httpx.Client, remote_job_id: str, started_at: float) -> bytes:
@@ -936,7 +1012,8 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
     sample_dir = MODEL_OUTPUT_DIR / job_id
     sample_dir.mkdir(parents=True, exist_ok=True)
     copied_input_path = sample_dir / f"input{input_path.suffix or '.png'}"
-    shutil.copy2(input_path, copied_input_path)
+    if input_path.resolve() != copied_input_path.resolve():
+        shutil.copy2(input_path, copied_input_path)
 
     remote_endpoint = "start-textured-shape" if HUNYUAN_REMOTE_ENABLE_TEXTURE else "start-shape"
     request_url = f"{HUNYUAN_REMOTE_URL}/{remote_endpoint}"
@@ -1031,7 +1108,6 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
         },
         "files": {
             "input_image": to_model_url(copied_input_path),
-            "triposr_input": None,
             "pointcloud_npy": None,
             "pointcloud_ply": None,
             "mesh": to_model_url(mesh_path),
@@ -1042,12 +1118,10 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
             "mesh_colored_ply": None,
             "preview_png": None,
             "summary_json": to_model_url(sample_dir / "reconstruction_summary.json"),
-            "triposr_summary_json": None,
         },
         "paths": {
             "output_dir": str(sample_dir),
             "input_image": str(copied_input_path),
-            "triposr_input": None,
             "pointcloud_npy": None,
             "pointcloud_ply": None,
             "mesh": str(mesh_path),
@@ -1058,7 +1132,6 @@ def save_hunyuan_remote_artifacts(input_path: Path, job_id: str, label: str | No
             "mesh_colored_ply": None,
             "preview_png": None,
             "summary_json": str(sample_dir / "reconstruction_summary.json"),
-            "triposr_summary_json": None,
         },
     }
     write_json(sample_dir / "reconstruction_summary.json", payload)
@@ -1248,18 +1321,16 @@ def health_check():
         },
         "reconstruction": {
             "backend": RECONSTRUCTION_BACKEND,
-            "model_name_or_path": TRIPOSR_MODEL_NAME_OR_PATH,
-            "repo_dir": TRIPOSR_REPO_DIR,
-            "device": TRIPOSR_DEVICE,
-            "loaded": _triposr_core is not None,
-            "remove_background": TRIPOSR_REMOVE_BACKGROUND,
-            "mc_resolution": TRIPOSR_MC_RESOLUTION,
-            "foreground_ratio": TRIPOSR_FOREGROUND_RATIO,
-            "num_points": TRIPOSR_NUM_POINTS,
-            "model_save_format": TRIPOSR_MODEL_SAVE_FORMAT,
             "hunyuan_remote_url": HUNYUAN_REMOTE_URL or None,
             "hunyuan_remote_timeout_seconds": HUNYUAN_REMOTE_TIMEOUT_SECONDS,
             "hunyuan_remote_texture_enabled": HUNYUAN_REMOTE_ENABLE_TEXTURE,
+        },
+        "image_cleanup": {
+            "backend": IMAGE_CLEANER_BACKEND,
+            "rembg_enabled": ENABLE_REMBG_CLEANER,
+            "max_side": CLEAN_IMAGE_MAX_SIDE,
+            "pad_ratio": CLEAN_IMAGE_PAD_RATIO,
+            "gemini_removed": True,
         },
         "ar_export": {
             "usdz_enabled": AR_USDZ_ENABLED,
@@ -1268,16 +1339,131 @@ def health_check():
             "timeout_seconds": AR_USDZ_TIMEOUT_SECONDS,
         },
         "reconstruction_preprocess": {
-            "segmented_mode": "yolo_bbox_crop_for_triposr_rembg",
-            "crop_margin_ratio": TRIPOSR_CROP_MARGIN_RATIO,
-            "crop_min_margin_px": TRIPOSR_CROP_MIN_MARGIN_PX,
-            "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
+            "segmented_mode": "bbox_crop_for_hunyuan_worker",
+            "crop_margin_ratio": RECON_CROP_MARGIN_RATIO,
+            "crop_min_margin_px": RECON_CROP_MIN_MARGIN_PX,
+            "background_handling": "local_image_cleaner",
             "legacy_mask_artifacts": True,
         },
         "outputs": {
             "segment_outputs": "/segment-outputs",
             "models": "/models",
         },
+    }
+
+
+@app.post("/preprocess/clean-image")
+async def preprocess_clean_image(
+    image: UploadFile = File(...),
+    bbox_x: float = Form(...),
+    bbox_y: float = Form(...),
+    bbox_width: float = Form(...),
+    bbox_height: float = Form(...),
+    job_id: str | None = Form(default=None),
+):
+    started_at = time.perf_counter()
+    pil_image = await read_upload_image(image)
+    resolved_job_id = safe_slug(job_id, "user-bbox") if job_id else build_job_id("user-bbox")
+    preprocess, _ = save_bbox_preprocess_artifacts(
+        pil_image,
+        resolved_job_id,
+        bbox_x=bbox_x,
+        bbox_y=bbox_y,
+        bbox_width=bbox_width,
+        bbox_height=bbox_height,
+    )
+    preprocess["processing_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+    return preprocess
+
+
+@app.post("/preprocess/gemini-clean")
+async def preprocess_gemini_clean_removed_alias(
+    image: UploadFile = File(...),
+    bbox_x: float = Form(...),
+    bbox_y: float = Form(...),
+    bbox_width: float = Form(...),
+    bbox_height: float = Form(...),
+    job_id: str | None = Form(default=None),
+):
+    preprocess = await preprocess_clean_image(
+        image=image,
+        bbox_x=bbox_x,
+        bbox_y=bbox_y,
+        bbox_width=bbox_width,
+        bbox_height=bbox_height,
+        job_id=job_id,
+    )
+    preprocess["gemini_removed"] = True
+    preprocess.setdefault("warnings", []).append("Gemini/Nano Banana cleanup has been removed; local cleaner was used.")
+    return preprocess
+
+
+@app.post("/reconstruct-bbox")
+async def reconstruct_bbox(
+    image: UploadFile = File(...),
+    bbox_x: float = Form(...),
+    bbox_y: float = Form(...),
+    bbox_width: float = Form(...),
+    bbox_height: float = Form(...),
+    job_id: str | None = Form(default=None),
+):
+    pil_image = await read_upload_image(image)
+    resolved_job_id = safe_slug(job_id, "user-bbox") if job_id else build_job_id("user-bbox")
+    existing = get_reconstruction_job(resolved_job_id)
+    if existing and existing.get("status") == "running":
+        raise HTTPException(status_code=409, detail=f"Reconstruction job is already running: {resolved_job_id}")
+
+    set_reconstruction_job(
+        resolved_job_id,
+        {
+            "job_id": resolved_job_id,
+            "status": "uploaded",
+            "stage": "uploaded",
+            "error": None,
+            "status_url": f"/reconstruction-jobs/{resolved_job_id}",
+        },
+    )
+    bbox_payload = {
+        "bbox_x": bbox_x,
+        "bbox_y": bbox_y,
+        "bbox_width": bbox_width,
+        "bbox_height": bbox_height,
+    }
+    Thread(
+        target=run_reconstruct_bbox_job,
+        args=(pil_image.copy(), resolved_job_id, bbox_payload),
+        daemon=True,
+    ).start()
+
+    return {
+        "job_id": resolved_job_id,
+        "status": "started",
+        "stage": "uploaded",
+        "backend": RECONSTRUCTION_BACKEND,
+        "status_url": f"/reconstruction-jobs/{resolved_job_id}",
+    }
+
+
+@app.get("/reconstruction-jobs/{job_id}")
+async def reconstruction_job_status(job_id: str):
+    job = get_reconstruction_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Reconstruction job not found: {job_id}")
+    if job.get("status") == "completed":
+        return job["result"]
+    if job.get("status") == "failed":
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "stage": "failed",
+            "error": job.get("error"),
+            "status_code": job.get("status_code"),
+        }
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "running"),
+        "stage": job.get("stage"),
+        "updated_at": job.get("updated_at"),
     }
 
 
@@ -1417,14 +1603,14 @@ async def reconstruct_object(
     )
 
     job_id = build_job_id(selected_detection["label"])
-    segment_payload, triposr_crop_path = save_segment_artifacts(
+    segment_payload, reconstruction_crop_path = save_segment_artifacts(
         pil_image=pil_image,
         result=result,
         selected_detection=selected_detection,
         job_id=job_id,
     )
     reconstruction = save_reconstruction_artifacts(
-        triposr_crop_path,
+        reconstruction_crop_path,
         job_id,
         label=selected_detection["label"],
     )
@@ -1471,11 +1657,11 @@ async def reconstruct_image(image: UploadFile = File(...)):
         "backend": reconstruction["backend"],
         "num_points": reconstruction["num_points"],
         "preprocessing": {
-            "mode": "triposr_direct_image",
-            "background_handling": "triposr_rembg" if TRIPOSR_REMOVE_BACKGROUND else "input_background",
+            "mode": "direct_image",
+            "background_handling": "hunyuan_worker",
         },
         "input_path": str(input_path),
-        "triposr_input_path": reconstruction["paths"]["triposr_input"],
+        "reconstruction_input_path": reconstruction["paths"].get("input_image"),
         "pointcloud_npy": reconstruction["paths"]["pointcloud_npy"],
         "pointcloud_ply": reconstruction["paths"]["pointcloud_ply"],
         "mesh": reconstruction["paths"]["mesh"],

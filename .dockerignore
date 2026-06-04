@@ -9,5 +9,4 @@ server/models
 server/uploads
 server/segment_outputs
 project/.venv-gpu
-project/.venv-triposr
 project/results

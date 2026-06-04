@@ -9,8 +9,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      TRIPOSR_REPO_DIR: /app/project/external/TripoSR
-      TRIPOSR_MODEL_SAVE_FORMAT: glb
+      RECONSTRUCTION_BACKEND: hunyuan_remote
+      HUNYUAN_REMOTE_URL: ${HUNYUAN_REMOTE_URL:-}
+      HUNYUAN_REMOTE_OUTPUT_FORMAT: glb
+      HUNYUAN_REMOTE_ENABLE_TEXTURE: "false"
     volumes:
       - ./server:/app/server
       - ./project:/app/project

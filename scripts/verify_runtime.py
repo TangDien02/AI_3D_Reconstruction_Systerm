@@ -15,16 +15,6 @@ REQUIRED_MODULES = [
     "torchvision",
     "ultralytics",
     "trimesh",
-    "omegaconf",
-    "einops",
-    "transformers",
-    "huggingface_hub",
-    "imageio",
-    "xatlas",
-    "moderngl",
-    "skimage",
-    "rembg",
-    "onnxruntime",
 ]
 
 
@@ -45,15 +35,8 @@ def main() -> int:
         print("Missing imports:", ", ".join(missing))
         return 1
 
-    try:
-        from src.reconstruction.triposr_runner import TripoSRConfig, TripoSRCore
-    except Exception as exc:
-        print(f"Failed to import TripoSR runner: {exc}")
-        return 1
-
     print(f"Python: {sys.version}")
-    print(f"TripoSR config default model: {TripoSRConfig().model_name_or_path}")
-    print(f"TripoSR core class: {TripoSRCore.__name__}")
+    print("Reconstruction backend: Hunyuan remote")
     print("Runtime import check: OK")
     return 0
 

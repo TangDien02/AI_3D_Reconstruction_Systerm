@@ -26,13 +26,15 @@ const DETECT_UPLOAD_COMPRESS = 0.65;
 const DETECT_COOLDOWN_MS = 350;
 const DETECT_EMPTY_HOLD_MS = 900;
 const RECON_CAPTURE_QUALITY = 0.92;
+const RECON_POLL_INTERVAL_MS = 5000;
+const RECON_POLL_TIMEOUT_MS = 45 * 60 * 1000;
 const TEXTURE_POLL_INTERVAL_MS = 5000;
 const TEXTURE_POLL_TIMEOUT_MS = 45 * 60 * 1000;
 const AR_MODEL_TITLE = 'Recon 3D Model';
 const activeWorkflowSteps = [
   'Nhan anh hoac video object',
-  'YOLO phat hien va crop vat the',
-  'Backend goi reconstruction worker de sinh mesh',
+  'Nguoi dung chon vung vat the',
+  'Backend goi Hunyuan worker de sinh mesh',
   'Export GLB va cac artifact 3D',
 ];
 
@@ -75,10 +77,14 @@ export default function App() {
   const [selectedObject, setSelectedObject] = useState(null);
   const [selectedFrameUri, setSelectedFrameUri] = useState(null);
   const [selectedDetectionSize, setSelectedDetectionSize] = useState(null);
+  const [capturedPhoto, setCapturedPhoto] = useState(null);
+  const [cropAreaLayout, setCropAreaLayout] = useState({ width: 0, height: 0 });
+  const [manualBbox, setManualBbox] = useState(null);
   const [segmentResult, setSegmentResult] = useState(null);
   const [reconstructionResult, setReconstructionResult] = useState(null);
   const [isPaintingTexture, setIsPaintingTexture] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
+  const cropDragStartRef = useRef(null);
 
   const clearObjectState = () => {
     detectSequenceRef.current += 1;
@@ -89,6 +95,8 @@ export default function App() {
     setSelectedObject(null);
     setSelectedFrameUri(null);
     setSelectedDetectionSize(null);
+    setCapturedPhoto(null);
+    setManualBbox(null);
     setSegmentResult(null);
     setReconstructionResult(null);
     setIsPaintingTexture(false);
@@ -125,7 +133,189 @@ export default function App() {
   };
 
   const runReconstruction = () => {
-    reconstructSelectedObject();
+    reconstructManualBbox();
+  };
+
+  const imageDisplayRect = () => {
+    if (!capturedPhoto?.width || !capturedPhoto?.height || !cropAreaLayout.width || !cropAreaLayout.height) {
+      return null;
+    }
+    const scale = Math.min(
+      cropAreaLayout.width / capturedPhoto.width,
+      cropAreaLayout.height / capturedPhoto.height,
+    );
+    const width = capturedPhoto.width * scale;
+    const height = capturedPhoto.height * scale;
+    return {
+      left: (cropAreaLayout.width - width) / 2,
+      top: (cropAreaLayout.height - height) / 2,
+      width,
+      height,
+    };
+  };
+
+  const clamp01 = (value) => Math.max(0, Math.min(1, value));
+
+  const defaultBbox = () => ({
+    x: 0.15,
+    y: 0.15,
+    width: 0.7,
+    height: 0.7,
+  });
+
+  const bboxToImagePixels = (bbox) => {
+    if (!bbox || !capturedPhoto?.width || !capturedPhoto?.height) {
+      throw new Error('Chua co bbox hop le.');
+    }
+    return {
+      x: bbox.x * capturedPhoto.width,
+      y: bbox.y * capturedPhoto.height,
+      width: bbox.width * capturedPhoto.width,
+      height: bbox.height * capturedPhoto.height,
+    };
+  };
+
+  const cropPointFromEvent = (event) => {
+    const rect = imageDisplayRect();
+    if (!rect) {
+      return null;
+    }
+    const { locationX, locationY } = event.nativeEvent;
+    return {
+      x: clamp01((locationX - rect.left) / rect.width),
+      y: clamp01((locationY - rect.top) / rect.height),
+    };
+  };
+
+  const updateManualBboxFromDrag = (event) => {
+    const start = cropDragStartRef.current;
+    const point = cropPointFromEvent(event);
+    if (!start || !point) {
+      return;
+    }
+    const x1 = Math.min(start.x, point.x);
+    const y1 = Math.min(start.y, point.y);
+    const x2 = Math.max(start.x, point.x);
+    const y2 = Math.max(start.y, point.y);
+    setManualBbox({
+      x: x1,
+      y: y1,
+      width: Math.max(0.02, x2 - x1),
+      height: Math.max(0.02, y2 - y1),
+    });
+  };
+
+  const capturePhotoForCrop = async () => {
+    if (!cameraRef.current) {
+      setCameraStatus('Camera chua san sang.');
+      return;
+    }
+
+    setIsSegmenting(false);
+    setSegmentResult(null);
+    setReconstructionResult(null);
+    setIsPaintingTexture(false);
+    setCameraStatus('Dang chup anh...');
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: RECON_CAPTURE_QUALITY,
+        base64: false,
+        shutterSound: false,
+        skipProcessing: false,
+      });
+      setCapturedPhoto(photo);
+      setSelectedFrameUri(photo.uri);
+      setManualBbox(defaultBbox());
+      setCameraStatus('Keo khung quanh vat the, sau do bam Tai tao.');
+    } catch (error) {
+      setCameraStatus(`Khong chup duoc anh: ${error.message}`);
+    }
+  };
+
+  const retakePhoto = () => {
+    setCapturedPhoto(null);
+    setSelectedFrameUri(null);
+    setManualBbox(null);
+    setSegmentResult(null);
+    setReconstructionResult(null);
+    setIsPaintingTexture(false);
+    setCameraStatus('Camera da san sang. Bam Chup anh de chon vat the.');
+  };
+
+  const waitForReconstructionJob = async (payload) => {
+    if (payload.status === 'done') {
+      return payload;
+    }
+    const statusPath = payload.status_url || `/reconstruction-jobs/${payload.job_id}`;
+    const startedAt = Date.now();
+    let current = payload;
+    while (current.status !== 'done') {
+      if (current.status === 'failed' || current.status === 'error') {
+        throw new Error(typeof current.error === 'string' ? current.error : JSON.stringify(current.error));
+      }
+      if (Date.now() - startedAt > RECON_POLL_TIMEOUT_MS) {
+        throw new Error('Reconstruction timed out while waiting for backend status.');
+      }
+      setCameraStatus(`Dang xu ly... ${current.stage || current.status || 'running'}`);
+      await delay(RECON_POLL_INTERVAL_MS);
+      const statusResponse = await fetch(`${API_BASE_URL}${statusPath}`);
+      if (!statusResponse.ok) {
+        const errorText = await statusResponse.text();
+        throw new Error(errorText || `HTTP ${statusResponse.status}`);
+      }
+      current = await statusResponse.json();
+    }
+    return current;
+  };
+
+  const reconstructManualBbox = async () => {
+    if (!capturedPhoto?.uri || !manualBbox) {
+      setCameraStatus('Hay chup anh va keo bbox quanh vat the truoc.');
+      return;
+    }
+
+    setIsSegmenting(true);
+    setSegmentResult(null);
+    setReconstructionResult(null);
+    setIsPaintingTexture(false);
+    setCameraStatus('Dang crop, clean bang Gemini va tao mesh...');
+
+    try {
+      const bbox = bboxToImagePixels(manualBbox);
+      const formData = new FormData();
+      formData.append('image', {
+        uri: capturedPhoto.uri,
+        name: 'manual-bbox-fullres.jpg',
+        type: 'image/jpeg',
+      });
+      formData.append('bbox_x', String(bbox.x));
+      formData.append('bbox_y', String(bbox.y));
+      formData.append('bbox_width', String(bbox.width));
+      formData.append('bbox_height', String(bbox.height));
+
+      const response = await fetch(`${API_BASE_URL}/reconstruct-bbox`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const startedPayload = await response.json();
+      const payload = await waitForReconstructionJob(startedPayload);
+      setSegmentResult(payload.preprocess || null);
+      setReconstructionResult(payload.reconstruction || null);
+      setCameraStatus('Da reconstruct xong. GLB san sang.');
+    } catch (error) {
+      setSegmentResult(null);
+      setReconstructionResult(null);
+      setCameraStatus(`Loi reconstruct: ${shortErrorMessage(error.message)}`);
+    } finally {
+      setIsSegmenting(false);
+    }
   };
 
   const waitForDetectionIdle = async () => {
@@ -499,8 +689,11 @@ export default function App() {
   };
 
   const segmentPreviewPath = (
-    segmentResult?.files?.triposr_crop
+    segmentResult?.files?.clean_image
+    || segmentResult?.files?.input
+    || segmentResult?.files?.reconstruction_input
     || segmentResult?.files?.crop
+    || segmentResult?.files?.input_crop
     || segmentResult?.files?.masked_crop
   );
   const meshFilePath = (
@@ -529,7 +722,7 @@ export default function App() {
       : 'MESH';
   const coloredMeshPath = reconstructionResult?.files?.mesh_colored_ply;
   const pointCloudPath = reconstructionResult?.files?.pointcloud_ply;
-  const triposrInputPath = reconstructionResult?.files?.triposr_input;
+  const reconstructionInputPath = reconstructionResult?.files?.input_image;
   const arGlbPath = reconstructionResult?.files?.mesh_textured_glb || reconstructionResult?.files?.mesh_glb;
   const arUsdzPath = (
     reconstructionResult?.files?.mesh_textured_usdz
@@ -540,6 +733,15 @@ export default function App() {
     || reconstructionResult?.files?.usdz
   );
   const meshSummary = reconstructionResult?.mesh || {};
+  const cropRect = imageDisplayRect();
+  const manualBboxStyle = cropRect && manualBbox
+    ? {
+        left: cropRect.left + manualBbox.x * cropRect.width,
+        top: cropRect.top + manualBbox.y * cropRect.height,
+        width: manualBbox.width * cropRect.width,
+        height: manualBbox.height * cropRect.height,
+      }
+    : null;
   const openServerFile = (path) => {
     const url = getServerFileUrl(path);
     if (url) {
@@ -586,16 +788,53 @@ export default function App() {
         style={styles.cameraScreen}
         onLayout={(event) => setCameraLayout(event.nativeEvent.layout)}
       >
-        <CameraView
-          ref={cameraRef}
-          animateShutter={false}
-          style={StyleSheet.absoluteFill}
-          facing="back"
-        />
-        <View style={styles.cameraShade} />
-        <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
-          {isScanning && detectedObjects.map(renderDetectionBox)}
-        </View>
+        {capturedPhoto ? (
+          <View
+            style={styles.cropPreviewArea}
+            onLayout={(event) => setCropAreaLayout(event.nativeEvent.layout)}
+          >
+            <Image
+              source={{ uri: capturedPhoto.uri }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="contain"
+            />
+            <View
+              style={StyleSheet.absoluteFill}
+              onStartShouldSetResponder={() => !isSegmenting}
+              onMoveShouldSetResponder={() => !isSegmenting}
+              onResponderGrant={(event) => {
+                const point = cropPointFromEvent(event);
+                cropDragStartRef.current = point;
+                if (point) {
+                  setManualBbox({ x: point.x, y: point.y, width: 0.02, height: 0.02 });
+                }
+              }}
+              onResponderMove={updateManualBboxFromDrag}
+              onResponderRelease={() => {
+                cropDragStartRef.current = null;
+                setCameraStatus('Da chon bbox. Bam Tai tao de clean input va tao mesh.');
+              }}
+            >
+              {manualBboxStyle && (
+                <View style={[styles.manualCropBox, manualBboxStyle]}>
+                  <View style={styles.manualCropLabel}>
+                    <Text style={styles.manualCropLabelText}>Object</Text>
+                  </View>
+                </View>
+              )}
+            </View>
+          </View>
+        ) : (
+          <>
+            <CameraView
+              ref={cameraRef}
+              animateShutter={false}
+              style={StyleSheet.absoluteFill}
+              facing="back"
+            />
+            <View style={styles.cameraShade} />
+          </>
+        )}
         <SafeAreaView pointerEvents="box-none" style={styles.cameraOverlay}>
           <View style={styles.cameraTopBar}>
             <Pressable
@@ -615,23 +854,27 @@ export default function App() {
             </Pressable>
             <View style={styles.liveBadge}>
               <View style={styles.liveDot} />
-              <Text style={styles.liveBadgeText}>Camera</Text>
+              <Text style={styles.liveBadgeText}>{capturedPhoto ? 'Crop' : 'Camera'}</Text>
             </View>
           </View>
 
-          <View style={styles.scanFrame}>
-            <View style={[styles.corner, styles.cornerTopLeft]} />
-            <View style={[styles.corner, styles.cornerTopRight]} />
-            <View style={[styles.corner, styles.cornerBottomLeft]} />
-            <View style={[styles.corner, styles.cornerBottomRight]} />
-          </View>
+          {!capturedPhoto && (
+            <View style={styles.scanFrame}>
+              <View style={[styles.corner, styles.cornerTopLeft]} />
+              <View style={[styles.corner, styles.cornerTopRight]} />
+              <View style={[styles.corner, styles.cornerBottomLeft]} />
+              <View style={[styles.corner, styles.cornerBottomRight]} />
+            </View>
+          )}
 
           <View style={styles.cameraPanel}>
-            <Text style={styles.panelTitle}>Đưa vật thể vào khung</Text>
+            <Text style={styles.panelTitle}>
+              {capturedPhoto ? 'Keo khung quanh vat the' : 'Chup anh vat the'}
+            </Text>
             <Text style={styles.panelText}>{cameraStatus}</Text>
-            {selectedObject && (
+            {capturedPhoto && manualBbox && (
               <Text style={styles.selectedText}>
-                Da chon: {selectedObject.label} {Math.round((selectedObject.confidence || 0) * 100)}%
+                Bbox: {Math.round(manualBbox.width * 100)}% x {Math.round(manualBbox.height * 100)}%
               </Text>
             )}
             {segmentPreviewPath && (
@@ -640,7 +883,7 @@ export default function App() {
                   source={{ uri: getServerFileUrl(segmentPreviewPath) }}
                   style={styles.segmentPreviewImage}
                 />
-                <Text style={styles.segmentPreviewText}>YOLO bbox crop gui sang reconstruction worker.</Text>
+                <Text style={styles.segmentPreviewText}>Gemini clean input gui sang Hunyuan worker.</Text>
               </View>
             )}
             {reconstructionResult && (reconstructionResult.files?.preview_png || meshFilePath) && (
@@ -700,10 +943,10 @@ export default function App() {
                         <Text style={styles.fileLinkText}>Point PLY</Text>
                       </Pressable>
                     )}
-                    {triposrInputPath && (
+                    {reconstructionInputPath && (
                       <Pressable
                         style={styles.fileLink}
-                        onPress={() => openServerFile(triposrInputPath)}
+                        onPress={() => openServerFile(reconstructionInputPath)}
                       >
                         <Text style={styles.fileLinkText}>Input</Text>
                       </Pressable>
@@ -717,21 +960,22 @@ export default function App() {
                 style={[
                   styles.cameraAction,
                   styles.secondaryAction,
-                  isScanning && styles.scanningAction,
+                  capturedPhoto && styles.scanningAction,
                 ]}
-                onPress={toggleScanning}
+                onPress={capturedPhoto ? retakePhoto : capturePhotoForCrop}
+                disabled={isSegmenting}
               >
                 <Text style={styles.secondaryActionText}>
-                  {isScanning ? 'Dừng quét' : 'Quét vật thể'}
+                  {capturedPhoto ? 'Chup lai' : 'Chup anh'}
                 </Text>
               </Pressable>
               <Pressable
                 style={[
                   styles.cameraAction,
                   styles.primaryAction,
-                  (!selectedObject || isSegmenting) && styles.disabledCameraAction,
+                  (!capturedPhoto || !manualBbox || isSegmenting) && styles.disabledCameraAction,
                 ]}
-                disabled={!selectedObject || isSegmenting}
+                disabled={!capturedPhoto || !manualBbox || isSegmenting}
                 onPress={runReconstruction}
               >
                 <Text style={styles.primaryActionText}>
@@ -752,7 +996,7 @@ export default function App() {
         <View style={styles.permissionCard}>
           <Text style={styles.permissionTitle}>Cần quyền camera</Text>
           <Text style={styles.permissionText}>
-            Ung dung can quyen camera de quet object, gui YOLO bbox ve backend va tai tao
+            Ung dung can quyen camera de chon object, gui bbox ve backend va tai tao
             mesh 3D tu object da detect.
           </Text>
           <Pressable style={styles.primaryButton} onPress={openCamera}>
@@ -780,7 +1024,7 @@ export default function App() {
         <View style={styles.heroBlock}>
           <Text style={styles.title}>Quét vật thể và tái tạo mô hình 3D</Text>
           <Text style={styles.subtitle}>
-            Camera mobile detect object lien tuc, chon bbox, gui anh sang backend de YOLO crop,
+            Camera mobile chon bbox vat the, gui anh sang backend de crop va clean input,
             Backend crop object, reconstruct mesh va export artifact 3D.
           </Text>
         </View>
@@ -800,7 +1044,7 @@ export default function App() {
         <View style={styles.noteBox}>
           <Text style={styles.noteTitle}>Phiên bản hiện tại</Text>
           <Text style={styles.noteText}>
-            Backend dang dung reconstruction worker. YOLO chi chon bbox va crop vat the; worker xu ly nen,
+            Backend dang dung Hunyuan reconstruction worker. Input preprocessing se crop/clean vat the,
             dung mesh GLB va xuat colored PLY de kiem tra mau sac trong Blender.
           </Text>
         </View>
@@ -993,6 +1237,32 @@ const styles = StyleSheet.create({
   cameraShade: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.16)',
+  },
+  cropPreviewArea: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
+  },
+  manualCropBox: {
+    position: 'absolute',
+    minWidth: 28,
+    minHeight: 28,
+    borderWidth: 3,
+    borderColor: '#A3E635',
+    backgroundColor: 'rgba(163, 230, 53, 0.12)',
+  },
+  manualCropLabel: {
+    position: 'absolute',
+    left: -3,
+    top: -30,
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    backgroundColor: '#A3E635',
+  },
+  manualCropLabelText: {
+    color: '#1A2E05',
+    fontSize: 13,
+    fontWeight: '900',
   },
   detectionBox: {
     position: 'absolute',
