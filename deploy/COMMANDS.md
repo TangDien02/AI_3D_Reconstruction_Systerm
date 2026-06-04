@@ -2,6 +2,14 @@
 
 Day la file lenh van hanh nhanh cho demo va deploy lai.
 
+Notebook full VM end-to-end nam o:
+
+```text
+deploy/VM_END_TO_END_SETUP.ipynb
+```
+
+Notebook nay setup worker + backend tren cung VM va expose backend bang Cloudflare tunnel cho Expo.
+
 ## VM GPU: check hardware
 
 ```bash

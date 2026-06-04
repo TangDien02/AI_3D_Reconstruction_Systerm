@@ -143,8 +143,10 @@ Bo huong dan final de dung lai VM/backend khi instance bi kill nam trong:
 deploy/
 ```
 
-Trong do co `FINAL_VM_DEPLOY.ipynb`, `APP_FEATURES_AND_USAGE.md`,
-`requirements.txt`, `COMMANDS.md`, va cac script tmux/backend helper.
+Trong do co `VM_END_TO_END_SETUP.ipynb` de setup worker + backend tren cung
+VM, `FINAL_VM_DEPLOY.ipynb` cho flow worker VM + backend Windows,
+`APP_FEATURES_AND_USAGE.md`, `requirements.txt`, `COMMANDS.md`, va cac script
+tmux/backend helper.
 
 Tom tat:
 
