@@ -25,7 +25,7 @@ fi
 cd "$REPO_DIR"
 python3.11 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
-python -m pip install -U pip wheel setuptools
+python -m pip install -U pip wheel "setuptools<82"
 python -m pip install --no-cache-dir -r requirements.txt
 python scripts/verify_runtime.py
 
