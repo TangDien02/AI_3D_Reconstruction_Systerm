@@ -28,13 +28,14 @@ fi
 
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
-python -m pip install -U pip wheel setuptools
+python -m pip install -U pip wheel "setuptools<82"
 
 cd "$HUNYUAN_DIR"
 python -m pip install --no-cache-dir -r requirements.txt
 # Re-assert CUDA PyTorch after Hunyuan requirements so later dependency
 # resolution cannot replace it with a CPU or incompatible wheel.
 python -m pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
+python -m pip install --no-cache-dir --force-reinstall "setuptools<82"
 python -m pip install --no-cache-dir -e .
 python -m pip install --no-cache-dir fastapi uvicorn[standard] python-multipart pillow psutil trimesh
 python -m pip install --no-cache-dir --force-reinstall --no-deps \
@@ -68,10 +69,30 @@ for package, version in expected.items():
         raise SystemExit(f"Expected {package}=={version}, got {actual}")
 PY
 
+TORCH_LIB="$(python - <<'PY'
+from pathlib import Path
+import torch
+print(Path(torch.__file__).resolve().parent / "lib")
+PY
+)"
+export LD_LIBRARY_PATH="$TORCH_LIB:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
+export PATH="$CUDA_HOME/bin:$PATH"
+
 if command -v nvcc >/dev/null 2>&1; then
   (cd "$HUNYUAN_DIR/hy3dgen/texgen/custom_rasterizer" && python setup.py install)
   (cd "$HUNYUAN_DIR/hy3dgen/texgen/differentiable_renderer" && python setup.py install)
   python - <<'PY'
+import ctypes
+from pathlib import Path
+import torch
+
+torch_lib = Path(torch.__file__).resolve().parent / "lib"
+for name in ("libc10.so", "libtorch.so", "libtorch_cpu.so", "libtorch_cuda.so"):
+    path = torch_lib / name
+    if path.exists():
+        ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
+
 import custom_rasterizer
 import mesh_processor
 print("Texture native extensions OK")
@@ -81,13 +102,6 @@ else
 fi
 
 cp "$REPO_DIR/scripts/hunyuan_vm_worker_production.py" "$WORK_DIR/hunyuan_vm_worker.py"
-
-TORCH_LIB="$(python - <<'PY'
-from pathlib import Path
-import torch
-print(Path(torch.__file__).resolve().parent / "lib")
-PY
-)"
 
 cat > "$WORK_DIR/hunyuan-worker.env" <<EOF
 PATH=$VENV_DIR/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
