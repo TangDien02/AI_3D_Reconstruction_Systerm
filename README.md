@@ -133,14 +133,14 @@ deploy/
 ```
 
 Trong do co `VM_END_TO_END_SETUP.ipynb` de setup worker + backend tren cung
-VM, `FINAL_VM_DEPLOY.ipynb` cho flow worker VM + backend Windows,
+VM, `REDEPLOY_VM.ipynb` cho flow worker VM + backend Windows,
 `APP_FEATURES_AND_USAGE.md`, `requirements.txt`, `COMMANDS.md`, va cac script
 tmux/backend helper.
 
 Tom tat:
 
 - Full VM end-to-end: chay `deploy/VM_END_TO_END_SETUP.ipynb`.
-- Worker VM + backend Windows: chay `deploy/FINAL_VM_DEPLOY.ipynb`.
+- Worker VM + backend Windows: chay `deploy/REDEPLOY_VM.ipynb`.
 - Hunyuan3D-2 worker co the setup bang:
 
 ```bash

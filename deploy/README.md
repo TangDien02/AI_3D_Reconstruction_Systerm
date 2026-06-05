@@ -4,7 +4,7 @@ Folder nay gom cac file can doc khi VM bi kill hoac can dung lai demo tu dau.
 
 ## File chinh
 
-- `FINAL_VM_DEPLOY.ipynb`: notebook chay tren Jupyter/VM de setup worker, check GPU, xem log, tao Cloudflare tunnel.
+- `REDEPLOY_VM.ipynb`: notebook chay tren Jupyter/VM de setup worker, check GPU, xem log, tao Cloudflare tunnel.
 - `VM_END_TO_END_SETUP.ipynb`: notebook setup VM tu dau de chay ca worker + backend + backend tunnel.
 - `APP_FEATURES_AND_USAGE.md`: chuc nang app va cach dung tu mobile.
 - `requirements.txt`: dependency cho FastAPI backend + local cleanup + project helper code.
@@ -74,5 +74,5 @@ HUNYUAN_REMOTE_URL=https://YOUR_NEW_TUNNEL.trycloudflare.com
 7. Restart backend local va test app.
 
 Neu muon VM chay full end-to-end, mo `VM_END_TO_END_SETUP.ipynb`.
-Neu chi muon worker VM + backend Windows, mo `FINAL_VM_DEPLOY.ipynb`.
+Neu chi muon worker VM + backend Windows, mo `REDEPLOY_VM.ipynb`.
 Chi tiet lenh nhanh nam trong `COMMANDS.md`.
