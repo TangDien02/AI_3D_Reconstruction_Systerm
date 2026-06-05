@@ -27,9 +27,11 @@ Neu VM vua bi stop/start lai, mo `COMMANDS.md` muc
 `VM GPU: reopen Jupyter after VM stop` truoc, sau do moi mo notebook tren
 JupyterLab.
 
-`VM_END_TO_END_SETUP.ipynb` bao gom cell OS/NVIDIA driver/CUDA Toolkit cho
-Debian 12. Version pin Hunyuan runtime nam trong
-`scripts/gcp_hunyuan_worker_bootstrap.sh`:
+`VM_END_TO_END_SETUP.ipynb` la notebook can mo khi muon setup VM tu dau:
+mo lai Jupyter sau khi VM stop, cai OS packages, NVIDIA driver, CUDA Toolkit,
+clone repo, setup worker, setup backend, expose backend tunnel, va smoke test
+end-to-end. Version pin Hunyuan runtime nam trong
+`scripts/gcp_hunyuan_worker_bootstrap.sh` va duoc notebook audit lai:
 
 - PyTorch CUDA wheels: `https://download.pytorch.org/whl/cu126`
 - `diffusers==0.31.0`

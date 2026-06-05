@@ -29,10 +29,12 @@ fi
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 python -m pip install -U pip wheel setuptools
-python -m pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
 
 cd "$HUNYUAN_DIR"
 python -m pip install --no-cache-dir -r requirements.txt
+# Re-assert CUDA PyTorch after Hunyuan requirements so later dependency
+# resolution cannot replace it with a CPU or incompatible wheel.
+python -m pip install --no-cache-dir --force-reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
 python -m pip install --no-cache-dir -e .
 python -m pip install --no-cache-dir fastapi uvicorn[standard] python-multipart pillow psutil trimesh
 python -m pip install --no-cache-dir --force-reinstall --no-deps \
@@ -43,9 +45,37 @@ python -m pip install --no-cache-dir --force-reinstall --no-deps \
   "accelerate==1.1.1"
 rm -rf "$HOME/.cache/huggingface/modules/diffusers_modules"
 
+python - <<'PY'
+import importlib.metadata as metadata
+import torch
+
+expected = {
+    "diffusers": "0.31.0",
+    "transformers": "4.46.3",
+    "tokenizers": "0.20.3",
+    "huggingface_hub": "0.26.2",
+    "accelerate": "1.1.1",
+}
+print("Torch:", torch.__version__)
+print("Torch CUDA available:", torch.cuda.is_available())
+print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No CUDA")
+if "+cu" not in torch.__version__:
+    raise SystemExit(f"Expected a CUDA PyTorch wheel, got torch=={torch.__version__}")
+for package, version in expected.items():
+    actual = metadata.version(package)
+    print(f"{package}=={actual}")
+    if actual != version:
+        raise SystemExit(f"Expected {package}=={version}, got {actual}")
+PY
+
 if command -v nvcc >/dev/null 2>&1; then
   (cd "$HUNYUAN_DIR/hy3dgen/texgen/custom_rasterizer" && python setup.py install)
   (cd "$HUNYUAN_DIR/hy3dgen/texgen/differentiable_renderer" && python setup.py install)
+  python - <<'PY'
+import custom_rasterizer
+import mesh_processor
+print("Texture native extensions OK")
+PY
 else
   echo "nvcc was not found. Shape generation can run, but texture extensions need CUDA toolkit/nvcc."
 fi
