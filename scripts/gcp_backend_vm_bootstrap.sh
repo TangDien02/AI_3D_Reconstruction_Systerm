@@ -27,6 +27,7 @@ python3.11 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 python -m pip install -U pip wheel "setuptools<82"
 python -m pip install --no-cache-dir -r requirements.txt
+export MPLBACKEND=Agg
 python scripts/verify_runtime.py
 
 cat > "$REPO_DIR/backend.env" <<EOF
