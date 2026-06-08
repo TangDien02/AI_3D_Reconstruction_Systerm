@@ -3,7 +3,6 @@ import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import {
-  Alert,
   Animated,
   Dimensions,
   Image,
@@ -39,8 +38,6 @@ const RECON_POLL_INTERVAL_MS = 5000;
 const RECON_POLL_TIMEOUT_MS = 45 * 60 * 1000;
 const TEXTURE_POLL_INTERVAL_MS = 5000;
 const TEXTURE_POLL_TIMEOUT_MS = 45 * 60 * 1000;
-const AR_MODEL_TITLE = 'Recon 3D Model';
-
 // ─── COLORS ────────────────────────────────────────────────────────────────────
 const C = {
   bg: '#0A0E1A',
@@ -64,16 +61,6 @@ const C = {
 };
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────────
-const buildAndroidSceneViewerUrl = (modelUrl, title = AR_MODEL_TITLE) => {
-  const encodedModelUrl = encodeURIComponent(modelUrl);
-  return (
-    `intent://arvr.google.com/scene-viewer/1.0?file=${encodedModelUrl}`
-    + `&mode=ar_preferred&title=${encodeURIComponent(title)}`
-    + '#Intent;scheme=https;package=com.google.android.googlequicksearchbox;'
-    + `action=android.intent.action.VIEW;S.browser_fallback_url=${encodedModelUrl};end;`
-  );
-};
-
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const shortErrorMessage = (message) => {
   if (!message) return 'Unknown error';
@@ -88,6 +75,7 @@ const LogoMark = ({ size = 28 }) => (
 );
 
 // ─── INLINE 3D VIEWER HTML ────────────────────────────────────────────────────
+// Exposure tăng lên 1.8, thêm environment map ambient sáng hơn
 const build3DViewerHTML = (modelUrl) => `<!DOCTYPE html>
 <html>
 <head>
@@ -137,7 +125,7 @@ function initScene(){
   renderer.setSize(w,h);
   renderer.outputEncoding=THREE.sRGBEncoding;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure=1.2;
+  renderer.toneMappingExposure=1.8;
   document.body.appendChild(renderer.domElement);
 
   var controls=new THREE.OrbitControls(camera,renderer.domElement);
@@ -146,14 +134,21 @@ function initScene(){
   controls.autoRotate=true;
   controls.autoRotateSpeed=1.2;
 
-  var ambientLight=new THREE.AmbientLight(0xffffff,0.6);
+  // Ambient sáng hơn
+  var ambientLight=new THREE.AmbientLight(0xffffff,1.2);
   scene.add(ambientLight);
-  var dirLight1=new THREE.DirectionalLight(0x6699ff,1.2);
+  // Key light
+  var dirLight1=new THREE.DirectionalLight(0xffffff,1.8);
   dirLight1.position.set(2,3,2);
   scene.add(dirLight1);
-  var dirLight2=new THREE.DirectionalLight(0xffffff,0.4);
-  dirLight2.position.set(-2,-1,-1);
+  // Fill light
+  var dirLight2=new THREE.DirectionalLight(0xaabbff,0.8);
+  dirLight2.position.set(-2,1,-2);
   scene.add(dirLight2);
+  // Rim light
+  var dirLight3=new THREE.DirectionalLight(0xffeedd,0.5);
+  dirLight3.position.set(0,-2,2);
+  scene.add(dirLight3);
 
   var loader=new THREE.GLTFLoader();
   loader.load(
@@ -161,6 +156,15 @@ function initScene(){
     function(gltf){
       loadEl.style.display='none';
       var obj=gltf.scene;
+      // Tăng roughness/metalness nhẹ để model trông rõ hơn
+      obj.traverse(function(child){
+        if(child.isMesh && child.material){
+          var mats=Array.isArray(child.material)?child.material:[child.material];
+          mats.forEach(function(mat){
+            if(mat.roughness!==undefined) mat.roughness=Math.max(0.3,mat.roughness);
+          });
+        }
+      });
       var box=new THREE.Box3().setFromObject(obj);
       var center=box.getCenter(new THREE.Vector3());
       var size=box.getSize(new THREE.Vector3());
@@ -445,7 +449,7 @@ export default function App() {
         height: payload.image_height || detectImage.height || photo.height || 0,
       };
       const serverMs = Number(payload.processing_ms || 0);
-      const roundTripMs = Date.now() - requestStartedAt;
+      const requestStartedAt2 = Date.now();
       if (scanActiveRef.current && requestId === detectSequenceRef.current) {
         if (objects.length > 0) {
           lastStableDetectionRef.current = { objects, imageUri: detectImage.uri, imageSize, updatedAt: Date.now() };
@@ -629,14 +633,10 @@ export default function App() {
   );
   const meshFileLabel = hasTexturedMesh ? 'Textured GLB' : reconstructionResult?.files?.mesh_glb ? 'GLB' :
     reconstructionResult?.files?.mesh_obj ? 'OBJ' : 'MESH';
-  const coloredMeshPath = reconstructionResult?.files?.mesh_colored_ply;
-  const pointCloudPath = reconstructionResult?.files?.pointcloud_ply;
-  const reconstructionInputPath = reconstructionResult?.files?.input_image;
-  const arGlbPath = reconstructionResult?.files?.mesh_textured_glb || reconstructionResult?.files?.mesh_glb;
-  const arUsdzPath = (
-    reconstructionResult?.files?.mesh_textured_usdz || reconstructionResult?.files?.textured_usdz ||
-    reconstructionResult?.files?.ar_textured_usdz || reconstructionResult?.files?.mesh_usdz ||
-    reconstructionResult?.files?.ar_usdz || reconstructionResult?.files?.usdz
+  const segmentPreviewPath = (
+    segmentResult?.files?.clean_image || segmentResult?.files?.input ||
+    segmentResult?.files?.reconstruction_input || segmentResult?.files?.crop ||
+    segmentResult?.files?.input_crop || segmentResult?.files?.masked_crop
   );
   const meshSummary = reconstructionResult?.mesh || {};
   const cropRect = imageDisplayRect();
@@ -655,44 +655,6 @@ export default function App() {
   const open3DViewer = (path) => {
     const url = getServerFileUrl(path);
     if (url) { setViewerModelUrl(url); setShow3DViewer(true); }
-  };
-
-  const openArPreview = async () => {
-    const glbUrl = getServerFileUrl(arGlbPath);
-    const usdzUrl = getServerFileUrl(arUsdzPath);
-    try {
-      if (Platform.OS === 'android' && glbUrl) {
-        await Linking.openURL(buildAndroidSceneViewerUrl(glbUrl, selectedObject?.label || AR_MODEL_TITLE));
-        return;
-      }
-      if (Platform.OS === 'ios' && usdzUrl) { await Linking.openURL(usdzUrl); return; }
-      if (Platform.OS === 'ios') {
-        Alert.alert('AR not ready', 'iOS Quick Look requires USDZ. Backend currently exports GLB only.');
-        return;
-      }
-      if (glbUrl) { await Linking.openURL(glbUrl); return; }
-      Alert.alert('AR not ready', 'No GLB or USDZ file available.');
-    } catch (error) {
-      Alert.alert('Cannot open AR', error.message);
-    }
-  };
-
-  const segmentPreviewPath = (
-    segmentResult?.files?.clean_image || segmentResult?.files?.input ||
-    segmentResult?.files?.reconstruction_input || segmentResult?.files?.crop ||
-    segmentResult?.files?.input_crop || segmentResult?.files?.masked_crop
-  );
-
-  const getProcessingIcon = () => {
-    switch (processingStage) {
-      case 'done': return '✓';
-      case 'error': return '✕';
-      case 'cropping': return '⌗';
-      case 'cleaning': return '◈';
-      case 'reconstructing': return '⟳';
-      case 'texturing': return '◉';
-      default: return '…';
-    }
   };
 
   // ── SCREEN: 3D VIEWER MODAL ──────────────────────────────────────────────────
@@ -727,11 +689,6 @@ export default function App() {
         )}
         <View style={S.viewerFooter}>
           <Text style={S.viewerHint}>Drag to rotate · Pinch to zoom</Text>
-          {arGlbPath && (
-            <TouchableOpacity style={S.viewerARBtn} onPress={openArPreview}>
-              <Text style={S.viewerARTxt}>View in AR</Text>
-            </TouchableOpacity>
-          )}
         </View>
       </View>
       <StatusBar style="light" />
@@ -741,6 +698,8 @@ export default function App() {
   // ── SCREEN: CAMERA ────────────────────────────────────────────────────────────
   if (screen === 'camera') {
     return (
+      // FIX: dùng View thay vì SafeAreaView bao ngoài, và đặt SafeAreaView chỉ quanh overlay
+      // để camera chiếm toàn màn hình, panel nằm sát bottom safe area
       <View style={S.cameraScreen} onLayout={(e) => setCameraLayout(e.nativeEvent.layout)}>
         <Viewer3DModal />
         {capturedPhoto ? (
@@ -765,7 +724,6 @@ export default function App() {
                   <View style={S.manualCropLabel}>
                     <Text style={S.manualCropLabelText}>Object</Text>
                   </View>
-                  {/* Corner marks */}
                   <View style={[S.corner, S.cornerTL]} />
                   <View style={[S.corner, S.cornerTR]} />
                   <View style={[S.corner, S.cornerBL]} />
@@ -777,14 +735,19 @@ export default function App() {
         ) : (
           <>
             <CameraView ref={cameraRef} animateShutter={false} style={StyleSheet.absoluteFill} facing="back" />
-            <View style={S.cameraDimOverlay} />
-            {detectedObjects.map(renderDetectionBox)}
+            <View style={S.cameraDimOverlay} pointerEvents="none" />
+            {/* Detection boxes: layer riêng absoluteFill, pointerEvents="box-none"
+                để touch xuyên qua vùng trống nhưng Pressable bên trong vẫn nhận tap */}
+            <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+              {detectedObjects.map(renderDetectionBox)}
+            </View>
           </>
         )}
 
-        <SafeAreaView pointerEvents="box-none" style={S.cameraOverlay}>
-          {/* TOP BAR */}
-          <View style={S.camTopBar}>
+        {/* Overlay UI: box-none để camera + detection boxes vẫn nhận touch */}
+        <View pointerEvents="box-none" style={S.cameraOverlay}>
+          {/* TOP BAR — pointerEvents auto để back button + badge nhận touch */}
+          <View style={S.camTopBar} pointerEvents="auto">
             <Pressable style={S.camBackBtn} onPress={() => {
               scanActiveRef.current = false; detectingRef.current = false;
               detectSequenceRef.current += 1;
@@ -811,11 +774,6 @@ export default function App() {
                 <View style={[S.scanCorner, S.scanCornerTR]} />
                 <View style={[S.scanCorner, S.scanCornerBL]} />
                 <View style={[S.scanCorner, S.scanCornerBR]} />
-                {isScanning && (
-                  <View style={S.scanLineContainer}>
-                    <View style={S.scanLine} />
-                  </View>
-                )}
               </View>
               {detectedObjects.length > 0 && (
                 <Text style={S.detectionHint}>Tap an object to select</Text>
@@ -823,13 +781,20 @@ export default function App() {
             </View>
           )}
 
-          {/* BOTTOM PANEL */}
-          <View style={S.camPanel}>
+          {/* SPACER — pointerEvents none để touch xuyên qua xuống camera/boxes */}
+          <View style={{ flex: 1 }} pointerEvents="none" />
+
+          {/* BOTTOM PANEL — pointerEvents auto để nhận touch bình thường */}
+          <View style={S.camPanel} pointerEvents="auto">
             {/* STATUS */}
             {cameraStatus !== '' && (
-              <View style={[S.statusRow, processingStage === 'error' && S.statusRowError, processingStage === 'done' && S.statusRowDone]}>
+              <View style={[S.statusRow,
+                processingStage === 'error' && S.statusRowError,
+                processingStage === 'done' && S.statusRowDone]}>
                 {isSegmenting && <ActivityIndicator size="small" color={C.accentLight} style={{ marginRight: 8 }} />}
-                <Text style={[S.statusText, processingStage === 'error' && S.statusTextError, processingStage === 'done' && S.statusTextDone]} numberOfLines={2}>
+                <Text style={[S.statusText,
+                  processingStage === 'error' && S.statusTextError,
+                  processingStage === 'done' && S.statusTextDone]} numberOfLines={2}>
                   {cameraStatus}
                 </Text>
               </View>
@@ -878,17 +843,13 @@ export default function App() {
                   </TouchableOpacity>
                   {/* PAINT TEXTURE */}
                   {canPaintTexture && (
-                    <TouchableOpacity style={[S.reconActionBtn, S.reconActionBtnGreen, isPaintingTexture && S.reconActionBtnDisabled]}
+                    <TouchableOpacity
+                      style={[S.reconActionBtn, S.reconActionBtnGreen, isPaintingTexture && S.reconActionBtnDisabled]}
                       onPress={paintTexture} disabled={isPaintingTexture}>
-                      {isPaintingTexture ? <ActivityIndicator size="small" color={C.green} /> : <Text style={S.reconActionIconGreen}>◈</Text>}
+                      {isPaintingTexture
+                        ? <ActivityIndicator size="small" color={C.green} />
+                        : <Text style={S.reconActionIconGreen}>◈</Text>}
                       <Text style={S.reconActionTextGreen}>{isPaintingTexture ? 'Painting' : 'Texture'}</Text>
-                    </TouchableOpacity>
-                  )}
-                  {/* AR */}
-                  {(arGlbPath || arUsdzPath) && (
-                    <TouchableOpacity style={[S.reconActionBtn, S.reconActionBtnAmber]} onPress={openArPreview}>
-                      <Text style={S.reconActionIconAmber}>⬚</Text>
-                      <Text style={S.reconActionTextAmber}>AR</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -933,7 +894,7 @@ export default function App() {
               )}
             </View>
           </View>
-        </SafeAreaView>
+        </View>
         <StatusBar style="light" />
       </View>
     );
@@ -964,7 +925,6 @@ export default function App() {
     <SafeAreaView style={S.introScreen}>
       <Viewer3DModal />
       <ScrollView style={{ flex: 1 }} contentContainerStyle={S.introScroll} showsVerticalScrollIndicator={false}>
-        {/* HERO */}
         <View style={S.heroSection}>
           <View style={S.logoRow}>
             <View style={S.logoBox}>
@@ -978,7 +938,6 @@ export default function App() {
           </Text>
         </View>
 
-        {/* PIPELINE STEPS */}
         <View style={S.pipelineSection}>
           <Text style={S.sectionLabel}>HOW IT WORKS</Text>
           <View style={S.pipeline}>
@@ -1001,14 +960,12 @@ export default function App() {
           </View>
         </View>
 
-        {/* FEATURES */}
         <View style={S.featuresSection}>
           <Text style={S.sectionLabel}>CAPABILITIES</Text>
           <View style={S.featuresGrid}>
             {[
               { icon: '⬡', title: 'GLB / OBJ Export', sub: 'Standard 3D formats ready for any tool' },
               { icon: '◉', title: 'Texture Painting', sub: 'AI-generated photorealistic textures' },
-              { icon: '⬚', title: 'AR Preview', sub: 'View your model in augmented reality' },
               { icon: '⟳', title: 'Live Detection', sub: 'Real-time YOLO object scanning' },
             ].map((f) => (
               <View key={f.title} style={S.featureCard}>
@@ -1020,7 +977,6 @@ export default function App() {
           </View>
         </View>
 
-        {/* STATUS NOTE */}
         <View style={S.noteBox}>
           <View style={S.noteDot} />
           <Text style={S.noteText}>
@@ -1029,7 +985,6 @@ export default function App() {
         </View>
       </ScrollView>
 
-      {/* CTA */}
       <View style={S.introFooter}>
         <TouchableOpacity
           style={[S.startBtn, !permission && S.startBtnDisabled]}
@@ -1063,16 +1018,17 @@ const S = StyleSheet.create({
   pipelineSection: { paddingHorizontal: 24, marginBottom: 32 },
   pipeline: { flexDirection: 'row', alignItems: 'flex-start', position: 'relative' },
   pipelineStep: { flex: 1, alignItems: 'center', position: 'relative' },
-  pipelineIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: C.bgCard, borderWidth: 0.5, borderColor: C.border, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
-  pipelineIcon: { fontSize: 20 },
+  pipelineIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: C.textMuted, borderWidth: 0.5, borderColor: C.border, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  pipelineIcon: { fontSize: 20, color: C.white },
   pipelineNum: { fontSize: 9, fontWeight: '700', color: C.accent, letterSpacing: 1, marginBottom: 3 },
   pipelineTitle: { fontSize: 11, fontWeight: '700', color: C.textPrimary, marginBottom: 2 },
   pipelineSub: { fontSize: 9, color: C.textMuted, textAlign: 'center', lineHeight: 12 },
   pipelineArrow: { position: 'absolute', right: -2, top: 20, width: 4, height: 4, borderRadius: 2, backgroundColor: C.accent },
   featuresSection: { paddingHorizontal: 24, marginBottom: 24 },
   featuresGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  featureCard: { width: (SCREEN_WIDTH - 58) / 2, backgroundColor: C.bgCard, borderRadius: 14, borderWidth: 0.5, borderColor: C.border, padding: 16 },
-  featureIcon: { fontSize: 22, marginBottom: 10 },
+  featureCard: { width: (SCREEN_WIDTH - 58) / 2, backgroundColor: C.bgCardAlt, borderRadius: 14, borderWidth: 0.5, borderColor: C.border, padding: 16 },
+  featureIconBox: { width: 48, height: 48, borderRadius: 10, backgroundColor: C.textMuted, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  featureIcon: { fontSize: 24, color: C.white },
   featureTitle: { fontSize: 12, fontWeight: '700', color: C.textPrimary, marginBottom: 4 },
   featureSub: { fontSize: 11, color: C.textMuted, lineHeight: 15 },
   noteBox: { marginHorizontal: 24, backgroundColor: C.bgCard, borderRadius: 10, borderWidth: 0.5, borderColor: C.border, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -1099,8 +1055,24 @@ const S = StyleSheet.create({
   cameraScreen: { flex: 1, backgroundColor: '#000' },
   cropPreviewArea: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000' },
   cameraDimOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.18)' },
-  cameraOverlay: { flex: 1, justifyContent: 'space-between' },
-  camTopBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 8 },
+
+  // FIX: overlay là View full screen, dùng flexDirection column
+  // Top bar stick to top (với paddingTop status bar), spacer ở giữa, panel stick to bottom
+  cameraOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'column',
+    justifyContent: 'flex-start',
+  },
+
+  // TOP BAR: paddingTop = status bar height (Platform-specific)
+  camTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 56 : 40,
+    paddingBottom: 12,
+  },
   camBackBtn: { width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.15)' },
   camBackIcon: { color: C.textPrimary, fontSize: 24, lineHeight: 26 },
   camTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1112,15 +1084,13 @@ const S = StyleSheet.create({
   liveBadgeText: { color: C.textPrimary, fontSize: 10, fontWeight: '800', letterSpacing: 1.5 },
 
   // SCAN FRAME
-  scanFrameWrapper: { alignItems: 'center' },
+  scanFrameWrapper: { alignItems: 'center', marginTop: 8 },
   scanFrame: { width: SCREEN_WIDTH * 0.78, aspectRatio: 0.75, position: 'relative' },
   scanCorner: { position: 'absolute', width: 22, height: 22, borderColor: C.scanBox },
   scanCornerTL: { left: 0, top: 0, borderLeftWidth: 3, borderTopWidth: 3 },
   scanCornerTR: { right: 0, top: 0, borderRightWidth: 3, borderTopWidth: 3 },
   scanCornerBL: { left: 0, bottom: 0, borderLeftWidth: 3, borderBottomWidth: 3 },
   scanCornerBR: { right: 0, bottom: 0, borderRightWidth: 3, borderBottomWidth: 3 },
-  scanLineContainer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' },
-  scanLine: { height: 1.5, backgroundColor: 'rgba(99,179,237,0.6)', marginTop: '40%' },
   detectionHint: { color: 'rgba(255,255,255,0.55)', fontSize: 11, marginTop: 10, letterSpacing: 0.3 },
 
   // DETECTION BOXES
@@ -1139,8 +1109,15 @@ const S = StyleSheet.create({
   manualCropLabel: { position: 'absolute', left: -2, top: -26, backgroundColor: C.accentLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
   manualCropLabelText: { color: '#001030', fontSize: 11, fontWeight: '900' },
 
-  // BOTTOM PANEL
-  camPanel: { backgroundColor: 'rgba(10,14,26,0.95)', borderTopWidth: 0.5, borderTopColor: C.border, padding: 16, gap: 10 },
+  // BOTTOM PANEL — stick to bottom với paddingBottom cho home indicator
+  camPanel: {
+    backgroundColor: 'rgba(10,14,26,0.97)',
+    borderTopWidth: 0.5,
+    borderTopColor: C.border,
+    padding: 16,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 16, // home indicator iOS
+    gap: 10,
+  },
   statusRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.bgCardAlt, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 0.5, borderColor: C.border },
   statusRowError: { borderColor: 'rgba(239,68,68,0.3)', backgroundColor: 'rgba(239,68,68,0.08)' },
   statusRowDone: { borderColor: 'rgba(16,217,138,0.3)', backgroundColor: 'rgba(16,217,138,0.08)' },
@@ -1162,15 +1139,12 @@ const S = StyleSheet.create({
   reconActions: { flexDirection: 'row', gap: 8 },
   reconActionBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bgCardAlt, borderRadius: 10, paddingVertical: 10, borderWidth: 0.5, borderColor: C.border, gap: 3 },
   reconActionBtnGreen: { borderColor: 'rgba(16,217,138,0.3)', backgroundColor: 'rgba(16,217,138,0.08)' },
-  reconActionBtnAmber: { borderColor: 'rgba(245,158,11,0.3)', backgroundColor: 'rgba(245,158,11,0.08)' },
   reconActionBtnDisabled: { opacity: 0.45 },
   reconActionIcon: { color: C.accentLight, fontSize: 16 },
   reconActionIconGreen: { color: C.green, fontSize: 16 },
-  reconActionIconAmber: { color: C.amber, fontSize: 16 },
   reconActionText: { color: C.textSecondary, fontSize: 10, fontWeight: '700' },
   reconActionTextGreen: { color: C.green, fontSize: 10, fontWeight: '700' },
-  reconActionTextAmber: { color: C.amber, fontSize: 10, fontWeight: '700' },
-  mainActionRow: { flexDirection: 'row', gap: 10, marginTop: 2 },
+  mainActionRow: { flexDirection: 'row', gap: 10 },
   secondaryBtn: { flex: 1, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: C.bgCardAlt, borderWidth: 0.5, borderColor: C.border },
   secondaryBtnText: { color: C.textSecondary, fontSize: 15, fontWeight: '700' },
   primaryBtn: { flex: 1.4, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: C.accent },
@@ -1185,7 +1159,13 @@ const S = StyleSheet.create({
 
   // ── 3D VIEWER
   viewerContainer: { flex: 1, backgroundColor: C.bg },
-  viewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 52 : 16, paddingBottom: 12, borderBottomWidth: 0.5, borderBottomColor: C.border, backgroundColor: C.bgCard },
+  viewerHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'ios' ? 56 : 16,
+    paddingBottom: 12,
+    borderBottomWidth: 0.5, borderBottomColor: C.border, backgroundColor: C.bgCard,
+  },
   viewerHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   viewerTitle: { color: C.textPrimary, fontSize: 16, fontWeight: '700' },
   viewerCloseBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: C.bgCardAlt, alignItems: 'center', justifyContent: 'center', borderWidth: 0.5, borderColor: C.border },
@@ -1193,8 +1173,11 @@ const S = StyleSheet.create({
   webview: { flex: 1, backgroundColor: C.bg },
   viewerLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   viewerLoadingTxt: { color: C.textMuted, fontSize: 14 },
-  viewerFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 14, paddingBottom: Platform.OS === 'ios' ? 28 : 14, borderTopWidth: 0.5, borderTopColor: C.border, backgroundColor: C.bgCard },
+  viewerFooter: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingVertical: 14,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 14,
+    borderTopWidth: 0.5, borderTopColor: C.border, backgroundColor: C.bgCard,
+  },
   viewerHint: { color: C.textMuted, fontSize: 12 },
-  viewerARBtn: { backgroundColor: C.accent, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 8 },
-  viewerARTxt: { color: C.white, fontSize: 13, fontWeight: '700' },
 });
