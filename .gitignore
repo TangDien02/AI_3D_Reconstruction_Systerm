@@ -17,8 +17,6 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-.env.local
-.env*.local
 
 server/uploads/
 server/models/
@@ -28,8 +26,6 @@ server/backend_*_stdout.log
 server/backend_*_stderr.log
 server/backend_*.log
 
-project/results/
-project/data/raw/
 
 mobile/node_modules/
 mobile/.expo/
