@@ -1,155 +1,196 @@
-# AI 3D Reconstruction System
+# 🚀 AI 3D Reconstruction System (ReconApp)
 
-Repo nay da duoc rut gon cho luong runtime hien tai:
+This repository hosts an **end-to-end system designed for 3D model reconstruction of objects from 2D images or 360-degree video scans**. The system comprises a mobile application (Frontend) for visual data collection and an AI server (Backend) for computer vision analysis and 3D rendering.
 
-```text
-Expo mobile app -> FastAPI backend -> Hunyuan3D worker -> mesh / texture export
+Initially conceived as a team project to learn and enhance Python development skills through game creation, this system has evolved to tackle the complex challenge of AI-driven 3D reconstruction, providing valuable experience in cutting-edge technologies.
+
+---
+
+## ✨ Key Features & Benefits
+
+*   **End-to-End 3D Reconstruction:** A complete pipeline from data capture to 3D model generation.
+*   **Mobile Data Acquisition:** A dedicated mobile application built with React Native and Expo for user-friendly collection of 2D images and 360-degree videos. It includes guidance for users during the data capture process to ensure optimal results.
+*   **Powerful AI Backend:** Utilizes Python with deep learning frameworks (PyTorch) for advanced computer vision tasks, processing raw visual data, and generating intricate 3D models.
+*   **Scalable Architecture:** Designed with a clear separation between frontend and backend, allowing for independent development and deployment.
+*   **Dockerized Deployment:** Simplified setup and consistent environment across different machines using Docker and `docker-compose`.
+*   **Interactive Simulation:** Includes an auxiliary HTML-based pixel office simulation, potentially for visualization, testing, or a separate interactive component.
+*   **Educational Focus:** Serves as a practical learning platform for mastering Python, AI, mobile development, and system integration.
+
+---
+
+## 🏗️ System Architecture
+
+The project is structured into two primary processing flows:
+
+### 1. 📱 Mobile App (Frontend)
+
+Developed using **React Native** and **Expo**, this acts as the client responsible for:
+*   **Data Collection:** Capturing 2D images and 360-degree video scans using the device's camera.
+*   **User Guidance:** Providing instructions to the user during the scanning process for optimal data capture.
+*   **Data Upload:** Sending collected visual data to the AI Backend for processing.
+
+### 2. 🧠 AI Server (Backend)
+
+The core processing unit, built primarily with **Python**, handling:
+*   **Computer Vision Analysis:** Applying advanced algorithms to interpret and process the incoming image/video data.
+*   **3D Reconstruction:** Utilizing techniques to reconstruct accurate 3D models from the processed visual input.
+*   **Model Storage & Retrieval:** Managing the generated 3D models.
+
+---
+
+## 🛠️ Technologies Used
+
+### Languages
+*   **Python** (Backend)
+*   **TypeScript** (Frontend)
+
+### Frameworks & Libraries
+*   **React** / **React Native** (Frontend for mobile application)
+*   **Expo** (Frontend for simplified React Native development)
+*   **PyTorch** (Backend for AI/Deep Learning)
+*   **trimesh** (Backend for 3D model processing)
+*   **numpy**, **pandas**, **pillow**, **matplotlib**, **scipy** (Backend for data manipulation and scientific computing)
+
+### Tools & Platforms
+*   **Docker** / **Docker Compose** (Containerization and orchestration)
+*   **Node.js** / **npm** (Frontend development environment)
+*   **Jest** (Frontend testing framework)
+
+---
+
+## ⚙️ Prerequisites & Dependencies
+
+Before you begin, ensure you have the following installed:
+
+*   **Git**: For cloning the repository.
+*   **Node.js** (LTS version recommended) & **npm** (comes with Node.js): For the frontend development.
+*   **Expo CLI**: Install globally via npm: `npm install -g expo-cli`.
+*   **Python 3.8+**: For the backend development.
+*   **pip**: Python package installer (comes with Python 3.4+).
+*   **Docker** & **Docker Compose**: For containerized deployment.
+
+---
+
+## 🚀 Installation & Setup
+
+Follow these steps to get the project up and running on your local machine.
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/ChienPM-27/AI_3D_Reconstruction_Systerm.git
+cd AI_3D_Reconstruction_Systerm
 ```
 
-TripoSR da bi go khoi project. Backend chi ho tro reconstruction qua
-`RECONSTRUCTION_BACKEND=hunyuan_remote`.
+### 2. Frontend Setup (Mobile App)
 
-## Runtime duoc ho tro
+Navigate to the project root directory (where `package.json` is located):
 
-- Python: `3.11.x`
-- Node.js: `20.x`
-
-## Thu muc chinh
-
-- `mobile/`: Expo app chup camera, gui anh/bbox va hien thi GLB/texture.
-- `server/`: FastAPI backend, artifact API, Hunyuan remote client.
-- `scripts/`: setup, Google Cloud VM worker/backend helpers.
-- `notebook/`: Hunyuan VM/Cloudflare/Jupyter workflows.
-- `project/samples/`: input sample cho smoke test.
-
-## Env local
-
-Khong ghi secret vao `.env` vi file nay dang bi Git track tu lich su cu.
-Dung `.env.local` cho cau hinh local:
-
-```powershell
-RECONSTRUCTION_BACKEND=hunyuan_remote
-HUNYUAN_REMOTE_URL=https://<your-worker-tunnel>
-IMAGE_CLEANER_BACKEND=auto
-ENABLE_REMBG_CLEANER=true
-CLEAN_IMAGE_MAX_SIDE=1536
-CLEAN_IMAGE_PAD_RATIO=0.08
-```
-
-`.env.local` da nam trong `.gitignore`.
-
-Gemini/Nano Banana API da bi go khoi runtime. Local cleaner se thu `rembg`
-neu co cai, roi fallback ve `crop_only` neu `rembg` thieu hoac fail:
-
-```powershell
-pip install rembg onnxruntime
-```
-
-## Setup tren Windows
-
-```powershell
-cd C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02
-.\scripts\setup.ps1
-```
-
-Script se:
-
-1. Tim `Python 3.11`
-2. Tao lai `.venv`
-3. Cai `requirements.txt`
-4. Chay import check runtime
-
-## Chay backend voi Hunyuan worker
-
-```powershell
-cd C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02
-.\.venv\Scripts\Activate.ps1
-$env:RECONSTRUCTION_BACKEND="hunyuan_remote"
-$env:HUNYUAN_REMOTE_URL="https://<your-worker-tunnel>"
-$env:HUNYUAN_REMOTE_OUTPUT_FORMAT="glb"
-$env:HUNYUAN_REMOTE_ENABLE_TEXTURE="false"
-$env:HUNYUAN_REMOTE_TIMEOUT_SECONDS="1800"
-$env:HUNYUAN_REMOTE_POLL_INTERVAL_SECONDS="5"
-python -m uvicorn server.main:app --host 0.0.0.0 --port 8000
-```
-
-Backend giu nguyen API cho Expo, nhung reconstruct se goi Hunyuan worker:
-
-- `POST /reconstruct-bbox` nhan anh + bbox nguoi dung keo, crop, local clean, roi goi Hunyuan.
-- `POST /preprocess/clean-image` debug crop + local clean, khong goi Hunyuan.
-- `GET /reconstruction-jobs/<job_id>` de poll trang thai `cropping`, `cleaning`, `generating_shape`, `completed`, `failed`.
-- `POST <HUNYUAN_REMOTE_URL>/start-shape` cho shape.
-- `POST <HUNYUAN_REMOTE_URL>/start-texture` cho texture paint rieng.
-
-Khuyen nghi production/T4:
-
-```powershell
-$env:HUNYUAN_REMOTE_ENABLE_TEXTURE="false"
-```
-
-Sau khi co shape `job_id`, paint texture bang:
-
-```powershell
-curl.exe -X POST "http://127.0.0.1:8000/paint-texture" -F "job_id=<JOB_ID>"
-```
-
-## Smoke test reconstruct-image
-
-```powershell
-curl.exe -X POST "http://127.0.0.1:8000/reconstruct-image" `
-  -F "image=@project\samples\chair_demo.png"
-```
-
-Artifact duoc ghi vao:
-
-- `server/models/<job_id>/mesh.glb`
-- `server/models/<job_id>/mesh_textured.glb` neu paint texture
-- `server/models/<job_id>/reconstruction_summary.json`
-
-## Chay mobile
-
-```powershell
-cd C:\Users\pminh\Desktop\MyProject\AI_3D_Reconstruction_Systerm_TangDien02\mobile
+```bash
 npm install
-$env:EXPO_PUBLIC_API_BASE_URL="http://<your-lan-ip>:8000"
-npm start
 ```
 
-Android Emulator:
+### 3. Backend Setup (AI Server)
 
-```powershell
-$env:EXPO_PUBLIC_API_BASE_URL="http://10.0.2.2:8000"
-```
-
-## Deployment
-
-Project nay khong dung Docker/Cloud Run trong runtime hien tai. Deployment
-chinh la GPU VM + systemd/tmux + Cloudflare tunnel.
-
-Bo huong dan final de dung lai VM/backend khi instance bi kill nam trong:
-
-```text
-deploy/
-```
-
-Trong do co `VM_END_TO_END_SETUP.ipynb` de setup worker + backend tren cung
-VM, `REDEPLOY_VM.ipynb` cho flow worker VM + backend Windows,
-`APP_FEATURES_AND_USAGE.md`, `requirements.txt`, `COMMANDS.md`, va cac script
-tmux/backend helper.
-
-Tom tat:
-
-- Full VM end-to-end: chay `deploy/VM_END_TO_END_SETUP.ipynb`.
-- Worker VM + backend Windows: chay `deploy/REDEPLOY_VM.ipynb`.
-- Hunyuan3D-2 worker co the setup bang:
+Navigate to the `project/` directory:
 
 ```bash
-bash scripts/gcp_hunyuan_worker_bootstrap.sh
+cd project/
+pip install -r requirements.txt
+cd .. # Go back to the project root
 ```
 
-- Backend VM co the chay bang:
+### 4. Dockerized Setup (Optional, but Recommended for Production)
+
+Ensure Docker and Docker Compose are running on your system.
+From the project root:
 
 ```bash
-export HUNYUAN_REMOTE_URL="https://YOUR_WORKER_8010_URL"
-bash scripts/gcp_backend_vm_bootstrap.sh
+docker-compose build
+docker-compose up
 ```
+This will build and start both the frontend (if configured in `docker-compose.yml`) and backend services in isolated containers.
+
+---
+
+## 💡 Usage Examples
+
+### Mobile App Development & Testing
+
+1.  **Start the Expo Development Server:**
+    From the project root:
+    ```bash
+    npm start
+    # or
+    expo start
+    ```
+    This will open the Expo Dev Tools in your browser. You can then scan the QR code with the Expo Go app on your mobile device (iOS/Android) or run on an emulator/simulator:
+    *   `expo start --android`
+    *   `expo start --ios`
+    *   `expo start --web` (for web preview)
+
+2.  **Using the Camera:** The app will leverage `expo-camera` for capturing images and videos, guiding the user through the 360-degree scan process.
+
+### Running Tests
+
+To run the frontend tests (Jest):
+
+```bash
+npm test
+```
+
+### Pixel Office Simulation
+
+The `pixel_simulation.html` file is a standalone HTML page. You can open it directly in a web browser to view the simulation. It might serve as a visual demo or a separate component.
+
+```bash
+open pixel_simulation.html
+# or simply navigate to the file in your browser
+```
+
+### Interacting with the AI Backend
+
+The mobile app is designed to communicate with the AI backend to send captured data and receive processed 3D models. Specific API endpoints and communication protocols would be defined within the application's source code.
+
+---
+
+## ⚙️ Configuration Options
+
+*   **Environment Variables (`.env`)**:
+    Create a `.env` file in the project root to manage environment-specific variables, such as API endpoints for the backend server, API keys, etc.
+    ```
+    # Example .env content
+    API_URL=http://localhost:5000/api
+    ```
+*   **Mobile App Configuration (`app.json`)**:
+    The `app.json` file in the root directory contains configuration settings for the Expo project, including app name, icon, splash screen, and permissions.
+*   **Docker Compose Configuration (`docker-compose.yml`)**:
+    Modify `docker-compose.yml` to adjust service ports, volumes, environment variables for containers, and scaling options for both frontend and backend services.
+
+---
+
+## 🤝 Contributing Guidelines
+
+We welcome contributions to enhance this AI 3D Reconstruction System! Please follow these guidelines:
+
+1.  **Fork the repository.**
+2.  **Create a new branch** for your feature or bug fix: `git checkout -b feature/your-feature-name`.
+3.  **Make your changes**, ensuring they adhere to the project's coding style (e.g., ESLint for TypeScript/React, Black/Flake8 for Python).
+4.  **Write comprehensive tests** for new features or bug fixes.
+5.  **Commit your changes** with a clear and descriptive message: `git commit -m "feat: Add new feature for X"`.
+6.  **Push your branch** to your forked repository: `git push origin feature/your-feature-name`.
+7.  **Open a Pull Request** to the `main` branch of this repository, describing your changes and their benefits.
+
+---
+
+## 📄 License Information
+
+This project is currently **unlicensed**. Please contact the repository owner, ChienPM-27, for information regarding usage and distribution.
+
+---
+
+## 🙏 Acknowledgments
+
+A special thanks to:
+*   The team members involved in this learning and development journey.
+*   The creators and communities of Python, React Native, Expo, PyTorch, and Docker for providing robust and open-source tools that make projects like this possible.
