@@ -1,24 +1,43 @@
 import { Platform } from 'react-native';
 
 export const C = {
-  bg: '#0A0E1A',
-  bgCard: '#111827',
-  bgCardAlt: '#1A2233',
-  border: 'rgba(99,179,237,0.15)',
-  borderActive: 'rgba(99,179,237,0.5)',
+  // Backgrounds
+  bg: '#080C18',
+  bgCard: '#0F1623',
+  bgCardAlt: '#151E2E',
+  bgSurface: '#1A2235',
+
+  // Borders
+  border: 'rgba(91,143,239,0.12)',
+  borderActive: 'rgba(91,143,239,0.45)',
+  borderSubtle: 'rgba(91,143,239,0.07)',
+
+  // Accent — electric blue
   accent: '#2D6BE4',
   accentLight: '#5B8FEF',
-  accentGlow: 'rgba(45,107,228,0.25)',
+  accentMid: '#3D7CF4',
+  accentGlow: 'rgba(45,107,228,0.2)',
+  accentGlowStrong: 'rgba(45,107,228,0.35)',
+
+  // Status
   green: '#10D98A',
-  greenDim: 'rgba(16,217,138,0.15)',
+  greenDim: 'rgba(16,217,138,0.12)',
+  greenBorder: 'rgba(16,217,138,0.3)',
   amber: '#F59E0B',
-  amberDim: 'rgba(245,158,11,0.15)',
+  amberDim: 'rgba(245,158,11,0.12)',
   red: '#EF4444',
-  textPrimary: '#F0F4FF',
-  textSecondary: '#8A9DC4',
-  textMuted: '#4A5A78',
-  scanBox: 'rgba(99,179,237,0.9)',
+  redDim: 'rgba(239,68,68,0.12)',
+
+  // Text
+  textPrimary: '#EEF2FF',
+  textSecondary: '#7B91B8',
+  textMuted: '#3D4F6A',
+  textDim: '#2A3850',
+
+  // Misc
+  scanBox: 'rgba(91,143,239,0.85)',
   white: '#FFFFFF',
+  overlay: 'rgba(8,12,24,0.92)',
 };
 
 const defaultApiBaseUrl = Platform.select({

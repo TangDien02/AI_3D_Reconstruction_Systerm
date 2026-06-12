@@ -4,7 +4,6 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
   Animated, Dimensions, Image, Linking, Platform,
   ScrollView, StyleSheet, Text, TouchableOpacity, View, Modal, ActivityIndicator,
-  TextInput
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -17,11 +16,55 @@ import { Viewer3DModal } from './src/components/Viewer3DModal';
 import SaveModal from './src/components/SaveModal';
 import HistoryModal from './src/components/HistoryModal';
 
+const { width: SCREEN_W } = Dimensions.get('window');
+
+// ─── Decorative hex grid for hero ────────────────────────────────────────────
+const HEX_POSITIONS = [
+  { x: 0.08, y: 0.12, s: 28 }, { x: 0.85, y: 0.08, s: 20 },
+  { x: 0.92, y: 0.32, s: 34 }, { x: 0.04, y: 0.42, s: 18 },
+  { x: 0.78, y: 0.55, s: 26 }, { x: 0.14, y: 0.68, s: 22 },
+  { x: 0.88, y: 0.72, s: 16 }, { x: 0.50, y: 0.05, s: 14 },
+  { x: 0.62, y: 0.78, s: 20 }, { x: 0.30, y: 0.85, s: 15 },
+];
+
+const FloatingHex = ({ x, y, size, delay: d }) => {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.delay(d),
+        Animated.timing(anim, { toValue: 1, duration: 3000 + d * 0.5, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 0, duration: 3000 + d * 0.5, useNativeDriver: true }),
+      ])
+    ).start();
+  }, []);
+  return (
+    <Animated.Text
+      style={{
+        position: 'absolute',
+        left: `${x * 100}%`,
+        top: `${y * 100}%`,
+        fontSize: size,
+        color: C.borderActive,
+        opacity: anim.interpolate({ inputRange: [0, 1], outputRange: [0.08, 0.3] }),
+        transform: [
+          { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) },
+          { rotate: anim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '15deg'] }) },
+        ],
+      }}
+    >
+      ⬡
+    </Animated.Text>
+  );
+};
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const cameraRef = useRef(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const heroScale = useRef(new Animated.Value(0.92)).current;
 
-  // --- UI State ---
+  // UI State
   const [screen, setScreen] = useState('intro');
   const [cameraStatus, setCameraStatus] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -34,7 +77,7 @@ export default function App() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveName, setSaveName] = useState('');
 
-  // --- Data State ---
+  // Data State
   const [capturedPhoto, setCapturedPhoto] = useState(null);
   const [cropAreaLayout, setCropAreaLayout] = useState({ width: 0, height: 0 });
   const [manualBbox, setManualBbox] = useState(null);
@@ -43,28 +86,31 @@ export default function App() {
   const [isPaintingTexture, setIsPaintingTexture] = useState(false);
   const cropDragStartRef = useRef(null);
 
-  // --- Effects ---
+  // Load history
   useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
-        if (stored) setHistory(JSON.parse(stored));
-      } catch (e) { console.error('Failed to load history', e); }
-    };
-    loadHistory();
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then(s => s && setHistory(JSON.parse(s)))
+      .catch(() => {});
   }, []);
 
+  // Screen fade + hero entrance
   useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 320, useNativeDriver: true }).start();
+    fadeAnim.setValue(0);
+    heroScale.setValue(0.94);
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 380, useNativeDriver: true }),
+      Animated.spring(heroScale, { toValue: 1, tension: 60, friction: 9, useNativeDriver: true }),
+    ]).start();
   }, [screen]);
 
-  // --- Logic Helpers ---
-  const getServerFileUrl = (path) => path ? (path.startsWith('http') ? path : `${API_BASE_URL}${path}`) : null;
-  
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+  const getServerFileUrl = (path) =>
+    path ? (path.startsWith('http') ? path : `${API_BASE_URL}${path}`) : null;
+
   const clearObjectState = () => {
     setCapturedPhoto(null); setManualBbox(null); setSegmentResult(null);
-    setReconstructionResult(null); setIsPaintingTexture(false); setProcessingStage('');
-    setCameraStatus('');
+    setReconstructionResult(null); setIsPaintingTexture(false);
+    setProcessingStage(''); setCameraStatus('');
   };
 
   const saveToHistory = async (reconstruction, segment, label) => {
@@ -72,21 +118,21 @@ export default function App() {
       const isUpdate = history.some(i => i.id === reconstruction.job_id);
       const newItem = {
         id: reconstruction.job_id || Date.now().toString(),
-        label: label || 'Untitled Object', timestamp: Date.now(),
+        label: label || 'Untitled Object',
+        timestamp: Date.now(),
         meshPath: reconstruction.files?.mesh_textured_glb || reconstruction.files?.mesh_glb,
-        thumbPath: segment?.files?.clean_image || segment?.files?.crop || reconstruction.files?.input_image || reconstruction.files?.input_original,
+        thumbPath: segment?.files?.clean_image || segment?.files?.crop
+          || reconstruction.files?.input_image || reconstruction.files?.input_original,
         isTextured: !!reconstruction.files?.mesh_textured_glb,
-        backend: reconstruction.backend, meshSummary: reconstruction.mesh || {},
+        backend: reconstruction.backend,
+        meshSummary: reconstruction.mesh || {},
       };
-      let updated;
-      if (isUpdate) {
-        updated = history.map(item => item.id === newItem.id ? { ...item, ...newItem, label: item.label } : item);
-      } else {
-        updated = [newItem, ...history.filter(i => i.id !== newItem.id)].slice(0, 20);
-      }
+      const updated = isUpdate
+        ? history.map(i => i.id === newItem.id ? { ...i, ...newItem, label: i.label } : i)
+        : [newItem, ...history.filter(i => i.id !== newItem.id)].slice(0, 20);
       setHistory(updated);
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    } catch (e) { console.error('Failed to save history', e); }
+    } catch {}
   };
 
   const textureHistoryItem = (item) => {
@@ -105,10 +151,7 @@ export default function App() {
 
   const exportHistoryItem = async (item) => {
     const url = getServerFileUrl(item.meshPath);
-    if (url) {
-      if (Platform.OS === 'web') { window.open(url, '_blank'); }
-      else { Linking.openURL(url); }
-    }
+    if (url) Platform.OS === 'web' ? window.open(url, '_blank') : Linking.openURL(url);
   };
 
   const openCamera = async () => {
@@ -125,13 +168,14 @@ export default function App() {
     if (url) { setViewerModelUrl(url); setShow3DViewer(true); }
   };
 
-  // --- API Actions ---
+  // ─── API ──────────────────────────────────────────────────────────────────
   const waitForReconstructionJob = async (payload) => {
     if (payload.status === 'done') return payload;
     const statusPath = payload.status_url || `/reconstruction-jobs/${payload.job_id}`;
     const startedAt = Date.now(); let current = payload;
     while (current.status !== 'done') {
-      if (['failed', 'error'].includes(current.status)) throw new Error(typeof current.error === 'string' ? current.error : JSON.stringify(current.error));
+      if (['failed', 'error'].includes(current.status))
+        throw new Error(typeof current.error === 'string' ? current.error : JSON.stringify(current.error));
       if (Date.now() - startedAt > CONFIG.RECON_POLL_TIMEOUT_MS) throw new Error('Reconstruction timed out.');
       setProcessingStage(current.stage || current.status || 'processing');
       await delay(CONFIG.RECON_POLL_INTERVAL_MS);
@@ -144,51 +188,49 @@ export default function App() {
 
   const reconstructManualBbox = async () => {
     if (!capturedPhoto?.uri || !manualBbox) return;
-    setIsProcessing(true); setProcessingStage('preprocess'); setCameraStatus('Processing...');
+    setIsProcessing(true); setProcessingStage('preprocess'); setCameraStatus('Processing…');
     try {
-      const padded = manualBbox;
-      const bbox = { x: padded.x * capturedPhoto.width, y: padded.y * capturedPhoto.height, width: padded.width * capturedPhoto.width, height: padded.height * capturedPhoto.height };
+      const { x, y, width, height } = manualBbox;
       const fd = new FormData();
       fd.append('image', { uri: capturedPhoto.uri, name: 'manual.jpg', type: 'image/jpeg' });
-      fd.append('bbox_x', String(bbox.x)); fd.append('bbox_y', String(bbox.y));
-      fd.append('bbox_width', String(bbox.width)); fd.append('bbox_height', String(bbox.height));
+      fd.append('bbox_x', String(x * capturedPhoto.width));
+      fd.append('bbox_y', String(y * capturedPhoto.height));
+      fd.append('bbox_width', String(width * capturedPhoto.width));
+      fd.append('bbox_height', String(height * capturedPhoto.height));
       const res = await fetch(`${API_BASE_URL}/reconstruct-bbox`, { method: 'POST', body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await waitForReconstructionJob(await res.json());
-      setSegmentResult(payload.preprocess); setReconstructionResult(payload.reconstruction);
+      setSegmentResult(payload.preprocess);
+      setReconstructionResult(payload.reconstruction);
       setProcessingStage('done'); setCameraStatus('3D model ready!');
-    } catch (e) { setCameraStatus(`Error: ${shortErrorMessage(e.message)}`); setProcessingStage('error'); }
-    finally { setIsProcessing(false); }
+    } catch (e) {
+      setCameraStatus(`Error: ${shortErrorMessage(e.message)}`);
+      setProcessingStage('error');
+    } finally { setIsProcessing(false); }
   };
 
   const captureAndReconstructFull = async () => {
     try {
-      setIsProcessing(true); setProcessingStage('capturing'); setCameraStatus('Capturing...');
+      setIsProcessing(true); setProcessingStage('capturing'); setCameraStatus('Capturing…');
       const photo = await cameraRef.current.takePictureAsync({ quality: CONFIG.RECON_CAPTURE_QUALITY });
       setCapturedPhoto(photo);
-      
-      const fd = new FormData(); 
+      const fd = new FormData();
       fd.append('image', { uri: photo.uri, name: 'obj.jpg', type: 'image/jpeg' });
-      
-      setCameraStatus('Generating Mesh...');
+      setCameraStatus('Generating mesh…');
       const res = await fetch(`${API_BASE_URL}/reconstruct-image`, { method: 'POST', body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
       const payload = await res.json();
-      setReconstructionResult(payload.reconstruction || payload); 
-      setProcessingStage('done'); 
-      setCameraStatus('Reconstruction ready!');
+      setReconstructionResult(payload.reconstruction || payload);
+      setProcessingStage('done'); setCameraStatus('Reconstruction ready!');
     } catch (e) {
       setCameraStatus(`Error: ${shortErrorMessage(e.message)}`);
       setProcessingStage('error');
-    } finally {
-      setIsProcessing(false);
-    }
+    } finally { setIsProcessing(false); }
   };
 
   const paintTexture = async () => {
     const jobId = reconstructionResult?.job_id; if (!jobId) return;
-    setIsPaintingTexture(true); setProcessingStage('texturing'); setCameraStatus('Painting texture...');
+    setIsPaintingTexture(true); setProcessingStage('texturing'); setCameraStatus('Painting texture…');
     try {
       const fd = new FormData(); fd.append('job_id', jobId);
       const res = await fetch(`${API_BASE_URL}/paint-texture`, { method: 'POST', body: fd });
@@ -198,31 +240,56 @@ export default function App() {
       while (payload.status !== 'done') {
         if (payload.status === 'error') throw new Error(payload.error);
         if (Date.now() - startAt > CONFIG.TEXTURE_POLL_TIMEOUT_MS) throw new Error('Timeout');
-        setProcessingStage(`texturing · ${payload.status}`); await delay(CONFIG.TEXTURE_POLL_INTERVAL_MS);
+        setProcessingStage(`texturing · ${payload.status}`);
+        await delay(CONFIG.TEXTURE_POLL_INTERVAL_MS);
         const sRes = await fetch(`${API_BASE_URL}${statusPath}`);
         payload = await sRes.json();
       }
-      setReconstructionResult(payload.reconstruction || payload); setProcessingStage('done'); setCameraStatus('Textured model ready!');
-    } catch (e) { setCameraStatus(`Texture error: ${shortErrorMessage(e.message)}`); setProcessingStage('error'); }
-    finally { setIsPaintingTexture(false); }
+      setReconstructionResult(payload.reconstruction || payload);
+      setProcessingStage('done'); setCameraStatus('Textured model ready!');
+    } catch (e) {
+      setCameraStatus(`Texture error: ${shortErrorMessage(e.message)}`);
+      setProcessingStage('error');
+    } finally { setIsPaintingTexture(false); }
   };
 
-  // --- Render Helpers ---
+  // ─── Bounding box helpers ──────────────────────────────────────────────────
   const imageRect = () => {
     if (!capturedPhoto || !cropAreaLayout.width) return null;
     const s = Math.min(cropAreaLayout.width / capturedPhoto.width, cropAreaLayout.height / capturedPhoto.height);
     const w = capturedPhoto.width * s, h = capturedPhoto.height * s;
-    return { left: (cropAreaLayout.width - w) / 2, top: (cropAreaLayout.height - h) / 2, width: w, height: h };
+    return {
+      left: (cropAreaLayout.width - w) / 2,
+      top: (cropAreaLayout.height - h) / 2,
+      width: w, height: h,
+    };
   };
 
-  // --- Main Render ---
+  const statusColor = processingStage === 'done'
+    ? C.green
+    : processingStage === 'error'
+    ? C.red
+    : C.accentLight;
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CAMERA SCREEN
+  // ══════════════════════════════════════════════════════════════════════════
   if (screen === 'camera') {
     const rect = imageRect();
-    const manualStyle = rect && manualBbox ? { left: rect.left + manualBbox.x * rect.width, top: rect.top + manualBbox.y * rect.height, width: manualBbox.width * rect.width, height: manualBbox.height * rect.height } : null;
+    const manualStyle = rect && manualBbox ? {
+      left: rect.left + manualBbox.x * rect.width,
+      top: rect.top + manualBbox.y * rect.height,
+      width: manualBbox.width * rect.width,
+      height: manualBbox.height * rect.height,
+    } : null;
     const meshPath = reconstructionResult?.files?.mesh_textured_glb || reconstructionResult?.files?.mesh_glb;
+    const isDone = processingStage === 'done';
+    const isError = processingStage === 'error';
 
     return (
       <View style={S.camScreen}>
+        <StatusBar style="light" />
+
         <SaveModal
           visible={showSaveModal}
           saveName={saveName}
@@ -231,33 +298,45 @@ export default function App() {
           onSave={() => {
             if (saveName.trim()) {
               saveToHistory(reconstructionResult, segmentResult, saveName.trim());
-              setShowSaveModal(false);
-              setSaveName('');
+              setShowSaveModal(false); setSaveName('');
               setCameraStatus('Saved to history!');
             }
           }}
-          styles={S}
         />
 
         <Viewer3DModal visible={show3DViewer} modelUrl={viewerModelUrl} onClose={() => setShow3DViewer(false)} />
-        
+
+        {/* Viewfinder */}
         {capturedPhoto ? (
           <View style={S.cropArea} onLayout={e => setCropAreaLayout(e.nativeEvent.layout)}>
             <Image source={{ uri: capturedPhoto.uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
             {!reconstructionResult && (
-              <View style={StyleSheet.absoluteFill}
-                onStartShouldSetResponder={() => !isProcessing} onMoveShouldSetResponder={() => !isProcessing}
-                onResponderGrant={e => { const p = clamp01((e.nativeEvent.locationX - (rect?.left || 0)) / (rect?.width || 1)); cropDragStartRef.current = { x: p, y: clamp01((e.nativeEvent.locationY - (rect?.top || 0)) / (rect?.height || 1)) }; }}
-                onResponderMove={e => { const p = clamp01((e.nativeEvent.locationX - (rect?.left || 0)) / (rect?.width || 1)); const py = clamp01((e.nativeEvent.locationY - (rect?.top || 0)) / (rect?.height || 1)); setManualBbox({ x: Math.min(cropDragStartRef.current.x, p), y: Math.min(cropDragStartRef.current.y, py), width: Math.max(0.01, Math.abs(p - cropDragStartRef.current.x)), height: Math.max(0.01, Math.abs(py - cropDragStartRef.current.y)) }); }}
+              <View
+                style={StyleSheet.absoluteFill}
+                onStartShouldSetResponder={() => !isProcessing}
+                onMoveShouldSetResponder={() => !isProcessing}
+                onResponderGrant={e => {
+                  const px = clamp01((e.nativeEvent.locationX - (rect?.left || 0)) / (rect?.width || 1));
+                  const py = clamp01((e.nativeEvent.locationY - (rect?.top || 0)) / (rect?.height || 1));
+                  cropDragStartRef.current = { x: px, y: py };
+                }}
+                onResponderMove={e => {
+                  const px = clamp01((e.nativeEvent.locationX - (rect?.left || 0)) / (rect?.width || 1));
+                  const py = clamp01((e.nativeEvent.locationY - (rect?.top || 0)) / (rect?.height || 1));
+                  setManualBbox({
+                    x: Math.min(cropDragStartRef.current.x, px),
+                    y: Math.min(cropDragStartRef.current.y, py),
+                    width: Math.max(0.01, Math.abs(px - cropDragStartRef.current.x)),
+                    height: Math.max(0.01, Math.abs(py - cropDragStartRef.current.y)),
+                  });
+                }}
               >
                 {manualStyle && (
-                  <View style={[S.manualBox, manualStyle]}>
-                    <View style={S.cropCorners}>
-                      <View style={[S.corner, { top: -2, left: -2, borderTopWidth: 3, borderLeftWidth: 3 }]} />
-                      <View style={[S.corner, { top: -2, right: -2, borderTopWidth: 3, borderRightWidth: 3 }]} />
-                      <View style={[S.corner, { bottom: -2, left: -2, borderBottomWidth: 3, borderLeftWidth: 3 }]} />
-                      <View style={[S.corner, { bottom: -2, right: -2, borderBottomWidth: 3, borderRightWidth: 3 }]} />
-                    </View>
+                  <View style={[S.cropBox, manualStyle]}>
+                    <View style={[S.corner, S.cornerTL]} />
+                    <View style={[S.corner, S.cornerTR]} />
+                    <View style={[S.corner, S.cornerBL]} />
+                    <View style={[S.corner, S.cornerBR]} />
                   </View>
                 )}
               </View>
@@ -267,58 +346,110 @@ export default function App() {
           <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
         )}
 
+        {/* Overlay UI */}
         <View style={S.camUI} pointerEvents="box-none">
-          <View style={S.camTop}>
-            <TouchableOpacity onPress={() => { clearObjectState(); setScreen('intro'); }} style={S.roundBtn}><Text style={{ color: '#fff', fontSize: 24 }}>‹</Text></TouchableOpacity>
-            <View style={S.camTitleBox}>
-              <LogoMark size={20} showText />
+          {/* Top bar */}
+          <View style={S.camTopBar}>
+            <TouchableOpacity
+              onPress={() => { clearObjectState(); setScreen('intro'); }}
+              style={S.topBtn}
+            >
+              <Text style={S.topBtnText}>‹</Text>
+            </TouchableOpacity>
+
+            <View style={S.camTopCenter}>
+              <LogoMark size={18} showText />
             </View>
-            <View style={[S.badge]}>
-              <Text style={S.badgeText}>PHOTO</Text>
+
+            <View style={S.modeChip}>
+              <Text style={S.modeChipText}>PHOTO</Text>
             </View>
           </View>
+
+          {/* Spacer */}
           <View style={{ flex: 1 }} pointerEvents="none" />
+
+          {/* Bottom panel */}
           <View style={S.camPanel}>
-            {processingStage !== '' && <ProcessingTimeline stage={processingStage} />}
+            {/* Timeline */}
+            {processingStage !== '' && (
+              <ProcessingTimeline stage={processingStage} />
+            )}
+
+            {/* Status message */}
             {cameraStatus !== '' && (
-              <View style={S.statusRow}>
-                <Text style={S.statusText}>{cameraStatus}</Text>
+              <View style={[S.statusPill, { borderColor: `${statusColor}40` }]}>
+                <View style={[S.statusDot, { backgroundColor: statusColor }]} />
+                <Text style={[S.statusText, { color: statusColor }]}>{cameraStatus}</Text>
               </View>
             )}
+
+            {/* Result actions */}
             {reconstructionResult && meshPath && (
               <View style={S.resultRow}>
-                <TouchableOpacity style={S.actionBtn} onPress={() => open3DViewer(meshPath)}>
+                <TouchableOpacity style={S.actionBtn} onPress={() => open3DViewer(meshPath)} activeOpacity={0.8}>
                   <Text style={S.actionBtnIcon}>⬡</Text>
-                  <Text style={S.actionBtnText}>Preview</Text>
+                  <Text style={S.actionBtnLabel}>Preview</Text>
                 </TouchableOpacity>
+
                 {reconstructionResult.backend === 'hunyuan_remote' && !reconstructionResult.files?.mesh_textured_glb && (
-                  <TouchableOpacity style={[S.actionBtn, S.actionBtnGreen]} onPress={paintTexture} disabled={isPaintingTexture}>
-                    <Text style={[S.actionBtnIcon, { color: C.green }]}>◈</Text>
-                    <Text style={[S.actionBtnText, { color: C.green }]}>Texture</Text>
+                  <TouchableOpacity
+                    style={[S.actionBtn, S.actionBtnGreen]}
+                    onPress={paintTexture}
+                    disabled={isPaintingTexture}
+                    activeOpacity={0.8}
+                  >
+                    {isPaintingTexture
+                      ? <ActivityIndicator size="small" color={C.green} />
+                      : <Text style={[S.actionBtnIcon, { color: C.green }]}>◈</Text>
+                    }
+                    <Text style={[S.actionBtnLabel, { color: C.green }]}>Texture</Text>
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity style={[S.actionBtn, { borderColor: C.accentActive }]} onPress={() => setShowSaveModal(true)}>
-                  <Text style={[S.actionBtnIcon, { color: C.accentLight }]}>💾</Text>
-                  <Text style={[S.actionBtnText, { color: C.white }]}>Save</Text>
+
+                <TouchableOpacity
+                  style={[S.actionBtn, S.actionBtnSave]}
+                  onPress={() => setShowSaveModal(true)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[S.actionBtnIcon, { color: C.accentLight }]}>↓</Text>
+                  <Text style={[S.actionBtnLabel, { color: C.accentLight }]}>Save</Text>
                 </TouchableOpacity>
               </View>
             )}
-            <View style={S.btnRow}>
+
+            {/* Primary actions */}
+            <View style={S.camBtnRow}>
               {capturedPhoto ? (
                 <>
-                  <TouchableOpacity style={S.secBtn} onPress={clearObjectState}><Text style={S.secBtnText}>Retake</Text></TouchableOpacity>
+                  <TouchableOpacity style={S.btnSec} onPress={clearObjectState} activeOpacity={0.8}>
+                    <Text style={S.btnSecText}>Retake</Text>
+                  </TouchableOpacity>
                   {!reconstructionResult && (
-                    <TouchableOpacity style={S.priBtn} onPress={manualBbox ? reconstructManualBbox : captureAndReconstructFull} disabled={isProcessing}>
-                      {isProcessing ? <ActivityIndicator color="#fff" /> : <Text style={S.priBtnText}>{manualBbox ? 'Reconstruct Crop' : 'Reconstruct Full'}</Text>}
+                    <TouchableOpacity
+                      style={[S.btnPri, isProcessing && S.btnPriDisabled]}
+                      onPress={manualBbox ? reconstructManualBbox : captureAndReconstructFull}
+                      disabled={isProcessing}
+                      activeOpacity={0.85}
+                    >
+                      {isProcessing
+                        ? <ActivityIndicator color="#fff" />
+                        : <Text style={S.btnPriText}>{manualBbox ? 'Reconstruct crop' : 'Reconstruct full'}</Text>
+                      }
                     </TouchableOpacity>
                   )}
                 </>
               ) : (
-                <TouchableOpacity style={S.priBtn} onPress={async () => {
-                  const p = await cameraRef.current.takePictureAsync({ quality: CONFIG.RECON_CAPTURE_QUALITY });
-                  setCapturedPhoto(p);
-                }}>
-                  <Text style={S.priBtnText}>Capture Image</Text>
+                <TouchableOpacity
+                  style={S.btnPri}
+                  onPress={async () => {
+                    const p = await cameraRef.current.takePictureAsync({ quality: CONFIG.RECON_CAPTURE_QUALITY });
+                    setCapturedPhoto(p);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <View style={S.captureCircle} />
+                  <Text style={S.btnPriText}>Capture</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -328,8 +459,13 @@ export default function App() {
     );
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // INTRO SCREEN
+  // ══════════════════════════════════════════════════════════════════════════
   return (
     <View style={S.intro}>
+      <StatusBar style="light" />
+
       <HistoryModal
         visible={showHistory}
         history={history}
@@ -339,112 +475,427 @@ export default function App() {
         onPreview={(item) => { setShowHistory(false); open3DViewer(item.meshPath); }}
         onDelete={deleteHistoryItem}
         getServerFileUrl={getServerFileUrl}
-        styles={S}
       />
 
       <Viewer3DModal visible={show3DViewer} modelUrl={viewerModelUrl} onClose={() => setShow3DViewer(false)} />
-      
-      <View style={{ flex: 1, paddingTop: Platform.OS === 'ios' ? 50 : 0 }}>
-        <ScrollView contentContainerStyle={{ padding: 24, paddingBottom: 40 }}>
-          <View style={S.hero}>
-            <LogoMark size={48} showText />
-            <Text style={S.heroSub}>Capture an object to generate a 3D model.</Text>
+
+      <ScrollView
+        contentContainerStyle={S.introScroll}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero */}
+        <Animated.View style={[S.hero, { opacity: fadeAnim, transform: [{ scale: heroScale }] }]}>
+          {/* Ambient hexes */}
+          <View style={S.hexBg} pointerEvents="none">
+            {HEX_POSITIONS.map((h, i) => (
+              <FloatingHex key={i} x={h.x} y={h.y} size={h.s} delay={i * 320} />
+            ))}
           </View>
 
-          <View style={S.cardGrid}>
-            <View style={S.glassCard}>
-              <Text style={S.cardIcon}>📷</Text>
-              <Text style={S.cardTitle}>Capture</Text>
-              <Text style={S.cardDesc}>Take a photo and crop the object you want.</Text>
-            </View>
-            <View style={S.glassCard}>
-              <Text style={S.cardIcon}>⬡</Text>
-              <Text style={S.cardTitle}>Export</Text>
-              <Text style={S.cardDesc}>Download GLB files for Blender or Unity.</Text>
-            </View>
+          {/* Logo */}
+          <View style={S.logoRow}>
+            <LogoMark size={40} showText pulse />
           </View>
 
-          {history.length > 0 && (
-            <TouchableOpacity style={S.historyEntry} onPress={() => setShowHistory(true)}>
-              <View style={S.historyEntryIcon}><Text style={{ color: C.accentLight, fontSize: 18 }}>⟳</Text></View>
-              <View style={{ flex: 1 }}>
-                <Text style={S.historyEntryText}>Recent Scans</Text>
-                <Text style={S.historyEntrySub}>{history.length} items saved</Text>
+          {/* Tagline */}
+          <Text style={S.heroTitle}>Photo → 3D mesh</Text>
+          <Text style={S.heroSub}>
+            Point. Tap. Get a textured 3D model ready for Blender or Unity.
+          </Text>
+
+          {/* Stats row */}
+          <View style={S.statsRow}>
+            {[
+              { v: 'GLB', l: 'format' },
+              { v: 'GPU', l: 'backend' },
+              { v: '3D', l: 'output' },
+            ].map(({ v, l }) => (
+              <View key={l} style={S.stat}>
+                <Text style={S.statVal}>{v}</Text>
+                <Text style={S.statLabel}>{l}</Text>
               </View>
-              <Text style={{ color: C.textMuted, fontSize: 24 }}>›</Text>
-            </TouchableOpacity>
-          )}
-        </ScrollView>
+            ))}
+          </View>
+        </Animated.View>
 
-        <View style={S.footer}>
-          <TouchableOpacity style={S.mainBtn} onPress={openCamera} activeOpacity={0.8}>
-            <Text style={S.mainBtnText}>Open Camera</Text>
-            <Text style={S.mainBtnArrow}>→</Text>
-          </TouchableOpacity>
-        </View>
+        {/* Feature cards */}
+        <Animated.View style={[S.cards, { opacity: fadeAnim }]}>
+          {[
+            {
+              icon: '◉',
+              title: 'Crop or full frame',
+              desc: 'Drag to select a region, or send the full image.',
+              color: C.accentLight,
+            },
+            {
+              icon: '◈',
+              title: 'AI texturing',
+              desc: 'Paint realistic surface materials after mesh generation.',
+              color: C.green,
+            },
+            {
+              icon: '↓',
+              title: 'Export GLB',
+              desc: 'Download and use anywhere — Blender, Unity, Three.js.',
+              color: C.amber,
+            },
+          ].map(({ icon, title, desc, color }) => (
+            <View key={title} style={S.featureCard}>
+              <View style={[S.featureIcon, { backgroundColor: `${color}18` }]}>
+                <Text style={[S.featureIconText, { color }]}>{icon}</Text>
+              </View>
+              <View style={S.featureMeta}>
+                <Text style={S.featureTitle}>{title}</Text>
+                <Text style={S.featureDesc}>{desc}</Text>
+              </View>
+            </View>
+          ))}
+        </Animated.View>
+
+        {/* History entry */}
+        {history.length > 0 && (
+          <Animated.View style={{ opacity: fadeAnim }}>
+            <TouchableOpacity style={S.historyEntry} onPress={() => setShowHistory(true)} activeOpacity={0.8}>
+              <View style={S.historyEntryLeft}>
+                <View style={S.historyEntryIcon}>
+                  <Text style={{ color: C.accentLight, fontSize: 16 }}>⟳</Text>
+                </View>
+                <View>
+                  <Text style={S.historyEntryTitle}>Recent scans</Text>
+                  <Text style={S.historyEntrySub}>{history.length} saved</Text>
+                </View>
+              </View>
+              <Text style={S.historyChevron}>›</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        <View style={{ height: 160 }} />
+      </ScrollView>
+
+      {/* Sticky CTA */}
+      <View style={S.stickyFooter}>
+        <TouchableOpacity style={S.ctaBtn} onPress={openCamera} activeOpacity={0.88}>
+          <View style={S.ctaBtnInner}>
+            <View style={S.ctaIconWrap}>
+              <Text style={S.ctaIcon}>◉</Text>
+            </View>
+            <Text style={S.ctaText}>Open camera</Text>
+            <Text style={S.ctaArrow}>→</Text>
+          </View>
+        </TouchableOpacity>
       </View>
-      <StatusBar style="light" />
     </View>
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// STYLES
+// ══════════════════════════════════════════════════════════════════════════════
 const S = StyleSheet.create({
+  // ── Intro ────────────────────────────────────────────────────────────────
   intro: { flex: 1, backgroundColor: C.bg },
-  hero: { marginTop: 60, marginBottom: 40, alignItems: 'center' },
-  heroSub: { fontSize: 15, color: C.textSecondary, textAlign: 'center', marginTop: 16, lineHeight: 22, maxWidth: '80%' },
-  cardGrid: { flexDirection: 'row', gap: 12, marginBottom: 24 },
-  glassCard: { flex: 1, backgroundColor: C.bgCardAlt, padding: 20, borderRadius: 24, borderWidth: 1, borderColor: C.border },
-  cardIcon: { fontSize: 24, marginBottom: 12 },
-  cardTitle: { color: C.textPrimary, fontWeight: '700', fontSize: 14, marginBottom: 6 },
-  cardDesc: { color: C.textMuted, fontSize: 11, lineHeight: 16 },
-  footer: { padding: 24, backgroundColor: C.bg },
-  mainBtn: { backgroundColor: C.accent, height: 64, borderRadius: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, elevation: 8, shadowColor: C.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
-  mainBtnText: { color: '#fff', fontSize: 18, fontWeight: '800' },
-  mainBtnArrow: { color: 'rgba(255,255,255,0.6)', fontSize: 20 },
-  historyEntry: { backgroundColor: C.bgCardAlt, padding: 16, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 16, borderWidth: 1, borderColor: C.borderActive },
-  historyEntryIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: C.accentGlow, alignItems: 'center', justifyContent: 'center' },
-  historyEntryText: { color: C.textPrimary, fontWeight: '700', fontSize: 16 },
-  historyEntrySub: { color: C.textMuted, fontSize: 12 },
+  introScroll: {
+    paddingTop: Platform.OS === 'ios' ? 58 : 32,
+    paddingHorizontal: 20,
+  },
 
+  // Hero
+  hero: {
+    borderRadius: 28,
+    backgroundColor: C.bgCard,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: 28,
+    marginBottom: 16,
+    overflow: 'hidden',
+    minHeight: 260,
+  },
+  hexBg: { ...StyleSheet.absoluteFillObject },
+  logoRow: { marginBottom: 20 },
+  heroTitle: {
+    color: C.textPrimary,
+    fontSize: 28,
+    fontWeight: '900',
+    letterSpacing: -0.8,
+    marginBottom: 8,
+  },
+  heroSub: {
+    color: C.textSecondary,
+    fontSize: 14,
+    lineHeight: 21,
+    maxWidth: '85%',
+    marginBottom: 24,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  stat: {
+    backgroundColor: C.bgCardAlt,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: C.borderSubtle,
+    alignItems: 'center',
+  },
+  statVal: {
+    color: C.accentLight,
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  statLabel: {
+    color: C.textMuted,
+    fontSize: 9,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 1,
+  },
+
+  // Feature cards
+  cards: { gap: 10, marginBottom: 16 },
+  featureCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.bgCard,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: C.borderSubtle,
+    padding: 16,
+    gap: 14,
+  },
+  featureIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  featureIconText: { fontSize: 20 },
+  featureMeta: { flex: 1 },
+  featureTitle: {
+    color: C.textPrimary,
+    fontWeight: '700',
+    fontSize: 14,
+    marginBottom: 3,
+  },
+  featureDesc: {
+    color: C.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+
+  // History entry
+  historyEntry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.bgCard,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: C.borderActive,
+    marginBottom: 8,
+  },
+  historyEntryLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  historyEntryIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    backgroundColor: C.accentGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: C.borderActive,
+  },
+  historyEntryTitle: { color: C.textPrimary, fontWeight: '700', fontSize: 15 },
+  historyEntrySub: { color: C.textMuted, fontSize: 12, marginTop: 1 },
+  historyChevron: { color: C.textMuted, fontSize: 22 },
+
+  // Sticky footer CTA
+  stickyFooter: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    backgroundColor: `${C.bg}F0`,
+  },
+  ctaBtn: {
+    borderRadius: 22,
+    overflow: 'hidden',
+    backgroundColor: C.accent,
+    shadowColor: C.accent,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  ctaBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 18,
+    gap: 12,
+  },
+  ctaIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ctaIcon: { color: '#fff', fontSize: 16 },
+  ctaText: { flex: 1, color: '#fff', fontSize: 17, fontWeight: '800' },
+  ctaArrow: { color: 'rgba(255,255,255,0.6)', fontSize: 20 },
+
+  // ── Camera screen ────────────────────────────────────────────────────────
   camScreen: { flex: 1, backgroundColor: '#000' },
   cropArea: { flex: 1, backgroundColor: '#000' },
   camUI: { ...StyleSheet.absoluteFillObject },
-  camTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
-  roundBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  camTitleBox: { flex: 1, alignItems: 'center' },
-  badge: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: C.border },
-  badgeText: { color: C.white, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  camPanel: { backgroundColor: 'rgba(10,14,26,0.98)', padding: 20, borderTopLeftRadius: 32, borderTopRightRadius: 32, borderTopWidth: 1, borderTopColor: C.border },
-  statusRow: { backgroundColor: C.bgCardAlt, borderRadius: 12, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 16, alignSelf: 'center' },
-  statusText: { color: C.accentLight, fontSize: 12, fontWeight: '600' },
-  btnRow: { flexDirection: 'row', gap: 12 },
-  priBtn: { flex: 1.5, height: 58, backgroundColor: C.accent, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  priBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  secBtn: { flex: 1, height: 58, backgroundColor: C.bgCardAlt, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
-  secBtnText: { color: C.textSecondary, fontSize: 15, fontWeight: '700' },
-  manualBox: { position: 'absolute', borderWidth: 1.5, borderColor: C.accentLight, backgroundColor: 'rgba(45,107,228,0.08)' },
-  cropCorners: { flex: 1, position: 'relative' },
-  corner: { position: 'absolute', width: 15, height: 15, borderColor: C.accentLight },
-  resultRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
-  actionBtn: { flex: 1, height: 48, borderRadius: 14, borderWidth: 1, borderColor: C.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C.bgCardAlt },
-  actionBtnGreen: { borderColor: 'rgba(16,217,138,0.3)', backgroundColor: 'rgba(16,217,138,0.05)' },
-  actionBtnIcon: { fontSize: 18, color: C.accentLight },
-  actionBtnText: { fontSize: 13, fontWeight: '700', color: C.textPrimary },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: C.bg, height: '85%', borderTopLeftRadius: 32, borderTopRightRadius: 32, overflow: 'hidden' },
-  modalHeader: { flexDirection: 'row', alignItems: 'center', padding: 24, borderBottomWidth: 1, borderBottomColor: C.border },
-  modalTitle: { flex: 1, marginLeft: 12, fontSize: 20, fontWeight: '800', color: C.white },
-  closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: C.bgCardAlt, alignItems: 'center', justifyContent: 'center' },
-  closeTxt: { color: C.textSecondary, fontSize: 18 },
-  historyCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.bgCardAlt, padding: 14, borderRadius: 24, marginBottom: 12, borderWidth: 1, borderColor: C.border },
-  historyThumb: { width: 56, height: 56, borderRadius: 12, backgroundColor: '#000' },
-  historyLabel: { color: C.textPrimary, fontWeight: '700', fontSize: 15, marginBottom: 2 },
-  historyDate: { color: C.textMuted, fontSize: 11 },
-  editInput: { color: C.white, backgroundColor: C.bg, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, fontSize: 15, fontWeight: '700', borderWidth: 1, borderColor: C.accent },
-  historyActions: { flexDirection: 'row', gap: 8 },
-  historyBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
-  emptyBox: { alignItems: 'center', marginTop: 100 },
-  emptyIcon: { fontSize: 60, color: C.textMuted, marginBottom: 20 },
-  emptyHistory: { color: C.textMuted, fontSize: 16, fontWeight: '600' },
+  // Top bar
+  camTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 58 : 38,
+    paddingBottom: 12,
+  },
+  topBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topBtnText: { color: '#fff', fontSize: 22 },
+  camTopCenter: { flex: 1, alignItems: 'center' },
+  modeChip: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  modeChipText: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+
+  // Bounding box
+  cropBox: {
+    position: 'absolute',
+    borderWidth: 1.5,
+    borderColor: C.accentLight,
+    backgroundColor: `${C.accentGlow}50`,
+  },
+  corner: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderColor: C.accentLight,
+  },
+  cornerTL: { top: -1, left: -1, borderTopWidth: 3, borderLeftWidth: 3 },
+  cornerTR: { top: -1, right: -1, borderTopWidth: 3, borderRightWidth: 3 },
+  cornerBL: { bottom: -1, left: -1, borderBottomWidth: 3, borderLeftWidth: 3 },
+  cornerBR: { bottom: -1, right: -1, borderBottomWidth: 3, borderRightWidth: 3 },
+
+  // Bottom panel
+  camPanel: {
+    backgroundColor: `${C.bgCard}FA`,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1,
+    borderTopColor: C.borderSubtle,
+  },
+
+  // Status
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: C.bgCardAlt,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 14,
+    gap: 7,
+    borderWidth: 1,
+  },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusText: { fontSize: 12, fontWeight: '700' },
+
+  // Result row
+  resultRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  actionBtn: {
+    flex: 1,
+    height: 52,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: C.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: C.bgCardAlt,
+  },
+  actionBtnGreen: {
+    borderColor: C.greenBorder,
+    backgroundColor: C.greenDim,
+  },
+  actionBtnSave: {
+    borderColor: C.borderActive,
+    backgroundColor: C.accentGlow,
+  },
+  actionBtnIcon: { fontSize: 17, color: C.accentLight },
+  actionBtnLabel: { fontSize: 12, fontWeight: '700', color: C.textPrimary },
+
+  // Buttons
+  camBtnRow: { flexDirection: 'row', gap: 12 },
+  btnPri: {
+    flex: 2,
+    height: 58,
+    backgroundColor: C.accent,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    shadowColor: C.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  btnPriDisabled: { opacity: 0.55 },
+  btnPriText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  captureCircle: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+  },
+  btnSec: {
+    flex: 1,
+    height: 58,
+    backgroundColor: C.bgCardAlt,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  btnSecText: { color: C.textSecondary, fontSize: 15, fontWeight: '700' },
 });

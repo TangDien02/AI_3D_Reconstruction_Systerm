@@ -1,0 +1,42 @@
+python -m uvicorn server.main:app --host 0.0.0.0 --port 8000
+
+$env:EXPO_PUBLIC_API_BASE_URL="http://192.168.64.122:8000"
+npx expo start --lan
+
+cp ~/work/hunyuan-worker.env ~/work/hunyuan-worker.env.bak.$(date +%Y%m%d_%H%M%S)
+
+
+//script đổi cấu hình hunyuan
+set_or_add() {
+  key="$1"
+  value="$2"
+  file="$HOME/work/hunyuan-worker.env"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s/^${key}=.*/${key}=${value}/" "$file"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+set_or_add HUNYUAN_INFERENCE_STEPS 45
+set_or_add HUNYUAN_OCTREE_RESOLUTION 384
+set_or_add HUNYUAN_NUM_CHUNKS 10000
+set_or_add HUNYUAN_KEEP_SHAPE_PIPELINE 1
+set_or_add HUNYUAN_KEEP_TEXTURE_PIPELINE 1
+set_or_add HUNYUAN_SHAPE_TORCH_DTYPE float32
+set_or_add HUNYUAN_TEXTURE_TORCH_DTYPE float32
+set_or_add HUNYUAN_LOW_CPU_MEM_USAGE 1
+
+grep -E 'HUNYUAN_INFERENCE|HUNYUAN_OCTREE|HUNYUAN_NUM|HUNYUAN_KEEP|HUNYUAN_.*DTYPE|HUNYUAN_LOW|HUNYUAN_MIN' ~/work/hunyuan-worker.env
+
+//reset worker
+sudo systemctl restart hunyuan-worker
+sleep 3
+curl -s http://127.0.0.1:8010/health | python3 -m json.tool
+
+//warmup shape + texture
+curl -X POST http://127.0.0.1:8010/warmup | python3 -m json.tool
+curl -X POST http://127.0.0.1:8010/warmup-texture | python3 -m json.tool
+
+//check health
+curl -s http://127.0.0.1:8010/health | python3 -m json.tool

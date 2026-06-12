@@ -1,57 +1,103 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Animated } from 'react-native';
 import { C } from '../theme';
 
+const STAGES = [
+  { id: 'capturing',     label: 'Capture',  icon: '◉' },
+  { id: 'preprocess',    label: 'Clean',    icon: '✦' },
+  { id: 'reconstructing',label: 'Mesh',     icon: '⬡' },
+  { id: 'texturing',     label: 'Texture',  icon: '◈' },
+];
+
+function resolveStageId(s) {
+  if (!s) return 'idle';
+  if (s === 'cropping' || s === 'cleaning' || s === 'preprocess') return 'preprocess';
+  if (s === 'generating_shape' || s === 'reconstructing') return 'reconstructing';
+  if (s.startsWith('texturing')) return 'texturing';
+  if (s === 'done') return 'done';
+  return s;
+}
+
+const PulsingDot = ({ color }) => {
+  const anim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, { toValue: 1.25, duration: 700, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    ).start();
+    return () => anim.stopAnimation();
+  }, []);
+  return (
+    <Animated.View
+      style={[
+        S.pulsing,
+        { backgroundColor: color, transform: [{ scale: anim }] },
+      ]}
+    />
+  );
+};
+
 export const ProcessingTimeline = ({ stage }) => {
-  const stages = [
-    { id: 'capturing', label: 'Capture', icon: '📷' },
-    { id: 'preprocess', label: 'Clean', icon: '✦' },
-    { id: 'reconstructing', label: 'Mesh', icon: '⬡' },
-    { id: 'texturing', label: 'Texture', icon: '◈' },
-  ];
+  const activeId = resolveStageId(stage);
+  const activeIndex = STAGES.findIndex(s => s.id === activeId);
 
-  const currentStageId = (s) => {
-    if (!s) return 'idle';
-    if (s === 'cropping' || s === 'cleaning' || s === 'preprocess') return 'preprocess';
-    if (s === 'generating_shape' || s === 'reconstructing') return 'reconstructing';
-    if (s.startsWith('texturing')) return 'texturing';
-    if (s === 'done') return 'done';
-    return s;
-  };
-
-  const activeId = currentStageId(stage);
-  const getStageStatus = (index) => {
-    const activeIndex = stages.findIndex(s => s.id === activeId);
+  const getStatus = (i) => {
     if (activeId === 'done') return 'completed';
     if (activeId === 'error') return 'failed';
-    if (activeIndex === index) return 'active';
-    if (activeIndex > index) return 'completed';
+    if (activeIndex === i) return 'active';
+    if (activeIndex > i) return 'completed';
     return 'pending';
   };
 
   return (
-    <View style={S.timelineContainer}>
-      {stages.map((s, i) => {
-        const status = getStageStatus(i);
+    <View style={S.wrap}>
+      {STAGES.map((s, i) => {
+        const status = getStatus(i);
+        const isLast = i === STAGES.length - 1;
+
         return (
-          <View key={s.id} style={S.timelineStep}>
-            <View style={[
-              S.timelineDot,
-              status === 'active' && S.timelineDotActive,
-              status === 'completed' && S.timelineDotCompleted,
-              status === 'failed' && S.timelineDotFailed
-            ]}>
-              {status === 'completed' ? (
-                <Text style={S.timelineCheck}>✓</Text>
-              ) : (
-                <Text style={[S.timelineIcon, status === 'active' && S.timelineIconActive]}>{s.icon}</Text>
-              )}
+          <React.Fragment key={s.id}>
+            <View style={S.step}>
+              <View
+                style={[
+                  S.dot,
+                  status === 'active' && S.dotActive,
+                  status === 'completed' && S.dotDone,
+                  status === 'failed' && S.dotFail,
+                ]}
+              >
+                {status === 'active' && <PulsingDot color={C.accentLight} />}
+                {status === 'completed' && (
+                  <Text style={S.check}>✓</Text>
+                )}
+                {(status === 'pending' || status === 'failed') && (
+                  <Text style={[S.icon, status === 'failed' && { color: C.red }]}>
+                    {s.icon}
+                  </Text>
+                )}
+              </View>
+              <Text
+                style={[
+                  S.label,
+                  status === 'active' && S.labelActive,
+                  status === 'completed' && S.labelDone,
+                ]}
+              >
+                {s.label}
+              </Text>
             </View>
-            <Text style={[S.timelineLabel, status === 'active' && S.timelineLabelActive]}>{s.label}</Text>
-            {i < stages.length - 1 && (
-              <View style={[S.timelineLine, getStageStatus(i+1) !== 'pending' && S.timelineLineActive]} />
+
+            {!isLast && (
+              <View
+                style={[
+                  S.line,
+                  getStatus(i + 1) !== 'pending' && S.lineActive,
+                ]}
+              />
             )}
-          </View>
+          </React.Fragment>
         );
       })}
     </View>
@@ -59,17 +105,71 @@ export const ProcessingTimeline = ({ stage }) => {
 };
 
 const S = StyleSheet.create({
-  timelineContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 4, marginBottom: 8 },
-  timelineStep: { flex: 1, alignItems: 'center', position: 'relative' },
-  timelineDot: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.bgCardAlt, borderWidth: 1, borderColor: C.border, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
-  timelineDotActive: { borderColor: C.accentLight, backgroundColor: C.accentGlow, transform: [{ scale: 1.1 }] },
-  timelineDotCompleted: { borderColor: C.green, backgroundColor: C.greenDim },
-  timelineDotFailed: { borderColor: C.red, backgroundColor: 'rgba(239,68,68,0.1)' },
-  timelineIcon: { fontSize: 14, color: C.textMuted },
-  timelineIconActive: { color: C.accentLight },
-  timelineCheck: { fontSize: 14, color: C.green, fontWeight: '900' },
-  timelineLabel: { fontSize: 9, fontWeight: '700', color: C.textMuted, marginTop: 6, textTransform: 'uppercase' },
-  timelineLabelActive: { color: C.textPrimary },
-  timelineLine: { position: 'absolute', height: 2, backgroundColor: C.border, top: 16, left: '50%', right: '-50%', zIndex: 1 },
-  timelineLineActive: { backgroundColor: C.green },
+  wrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    marginBottom: 6,
+  },
+  step: {
+    alignItems: 'center',
+    width: 58,
+  },
+  dot: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: C.bgSurface,
+    borderWidth: 1,
+    borderColor: C.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dotActive: {
+    borderColor: C.accentLight,
+    backgroundColor: C.accentGlow,
+  },
+  dotDone: {
+    borderColor: C.green,
+    backgroundColor: C.greenDim,
+  },
+  dotFail: {
+    borderColor: C.red,
+    backgroundColor: C.redDim,
+  },
+  pulsing: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  icon: {
+    fontSize: 13,
+    color: C.textMuted,
+  },
+  check: {
+    fontSize: 13,
+    color: C.green,
+    fontWeight: '900',
+  },
+  label: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: C.textMuted,
+    marginTop: 5,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  labelActive: { color: C.accentLight },
+  labelDone: { color: C.green },
+  line: {
+    flex: 1,
+    height: 1.5,
+    backgroundColor: C.borderSubtle,
+    marginBottom: 16,
+    marginHorizontal: -2,
+  },
+  lineActive: {
+    backgroundColor: C.greenBorder,
+  },
 });
