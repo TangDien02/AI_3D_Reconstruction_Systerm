@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
+from tqdm import tqdm
 
 # Ghi chu:
 # File nay la training pipeline cho bai toan single-view 3D reconstruction.
