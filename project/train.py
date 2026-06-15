@@ -1,0 +1,5 @@
+from src.training.training_pipeline import main
+
+
+if __name__ == "__main__":
+    main()

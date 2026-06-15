@@ -1,0 +1,513 @@
+```latex
+\documentclass[conference,a4paper]{IEEEtran}
+
+\usepackage[T5]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese]{babel}
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{url}
+
+\begin{document}
+
+\title{Tái Cấu Trúc Vật Thể 3D Từ Một Ảnh Duy Nhất:\\
+Từ Nghiên Cứu Cơ Sở ResNet50 Đến Triển Khai Thực Tế Hunyuan3D}
+
+\author{
+\IEEEauthorblockN{
+Đỗ Mạnh Huy \and
+Đoàn Quang Khải \and
+Phạm Minh Chiến
+}
+\IEEEauthorblockA{
+Ngành Công nghệ Thông tin\\
+Trường Đại học Sài Gòn\\
+Thành phố Hồ Chí Minh, Việt Nam
+}
+}
+
+\maketitle
+
+\begin{abstract}
+Tái tạo vật thể ba chiều từ một ảnh duy nhất (Single-View 3D Reconstruction) là một bài toán đầy thách thức do tính chất nghịch đảo không tường minh của quá trình suy diễn hình học từ dữ liệu hai chiều. Báo cáo này trình bày quá trình nghiên cứu và phát triển một hệ thống tái tạo 3D hoàn chỉnh thông qua hai giai đoạn kế thừa.
+
+Trong giai đoạn nghiên cứu cơ sở, chúng tôi đề xuất một mô hình học sâu dạng encoder-decoder nhằm chuyển đổi trực tiếp ảnh đầu vào thành đám mây điểm 3D. Mô hình sử dụng bộ mã hóa ResNet50 kết hợp cơ chế tinh chỉnh tham số hiệu quả (Parameter-Efficient Fine-Tuning -- PEFT) thông qua Adapter Bottleneck, cùng bộ giải mã mây điểm theo chiến lược từ thô đến tinh (coarse-to-fine). Bên cạnh hàm mất mát Chamfer truyền thống, hệ thống còn tích hợp các thành phần điều hòa nhằm cải thiện tính đồng đều và khả năng bảo tồn chi tiết của đám mây điểm sinh ra. Thực nghiệm trên tập dữ liệu Pix3D cho thấy mô hình đạt Chamfer Distance 0.0094 và F-score 0.633.
+
+Tuy nhiên, các mô hình mây điểm nội bộ vẫn tồn tại hạn chế về chất lượng lưới tam giác và khả năng tái tạo kết cấu bề mặt trong môi trường ứng dụng thực tế. Do đó, giai đoạn thứ hai tập trung vào thiết kế một kiến trúc production phân tán dựa trên mô hình nền tảng Hunyuan3D-2. Hệ thống được triển khai theo mô hình Client--Server--Worker, hỗ trợ tái tạo hình học, sinh kết cấu bề mặt, xuất tệp GLB và hiển thị thực tế tăng cường (AR) trên thiết bị di động.
+
+Kết quả đạt được cho thấy việc kết hợp giữa nghiên cứu thuật toán cốt lõi và năng lực triển khai hệ thống có thể tạo ra một giải pháp tái tạo 3D toàn diện, vừa có giá trị học thuật vừa có tiềm năng ứng dụng thực tiễn.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Single-View 3D Reconstruction,
+Point Cloud Generation,
+ResNet50,
+Parameter-Efficient Fine-Tuning,
+Chamfer Distance,
+Hunyuan3D-2,
+Augmented Reality.
+\end{IEEEkeywords}
+
+\section{Giới thiệu}
+
+Tái tạo cấu trúc hình học ba chiều từ một ảnh duy nhất là một trong những bài toán quan trọng của lĩnh vực thị giác máy tính. Khác với các phương pháp tái tạo đa góc nhìn, bài toán này yêu cầu mô hình phải suy diễn toàn bộ hình dạng không gian của vật thể chỉ dựa trên thông tin hình ảnh hai chiều, bao gồm cả các vùng bị che khuất. Do đó, đây được xem là một bài toán nghịch đảo không tường minh (ill-posed inverse problem).
+
+Trong những năm gần đây, sự phát triển mạnh mẽ của học sâu đã thúc đẩy sự ra đời của nhiều hướng tiếp cận khác nhau cho bài toán tái tạo 3D. Các phương pháp dựa trên voxel cho phép biểu diễn cấu trúc thể tích nhưng thường gặp rào cản về chi phí bộ nhớ. Trong khi đó, biểu diễn mây điểm mang lại tính linh hoạt cao hơn và trở thành một trong những lựa chọn phổ biến đối với các hệ thống tái tạo từ ảnh đơn.
+
+Bên cạnh đó, sự xuất hiện của các mô hình nền tảng (foundation models) dành cho dữ liệu 3D đã mở ra khả năng sinh mô hình có độ chân thực cao phục vụ các ứng dụng thực tế. Tuy nhiên, việc phụ thuộc hoàn toàn vào các mô hình quy mô lớn có thể khiến người học khó tiếp cận bản chất của quá trình biểu diễn hình học và tối ưu hóa mô hình.
+
+Xuất phát từ bối cảnh đó, dự án này được phát triển theo định hướng hai giai đoạn kế thừa lẫn nhau.
+
+Giai đoạn thứ nhất tập trung vào nghiên cứu cơ sở nhằm làm chủ quy trình xây dựng mô hình tái tạo 3D từ đầu. Chúng tôi đề xuất một kiến trúc encoder--decoder sử dụng ResNet50 kết hợp Adapter PEFT và bộ giải mã mây điểm từ thô đến tinh. Mục tiêu của giai đoạn này là khảo sát ảnh hưởng của từng thành phần kiến trúc thông qua nghiên cứu cắt bỏ và đánh giá khả năng biểu diễn hình học của mô hình.
+
+Giai đoạn thứ hai hướng đến triển khai thực tế thông qua việc tích hợp mô hình nền tảng Hunyuan3D-2 vào một hệ thống phân tán hoàn chỉnh. Kiến trúc production được xây dựng theo mô hình Client--Server--Worker, cho phép người dùng tạo mô hình 3D từ ảnh chụp trên thiết bị di động, xuất tệp GLB và trải nghiệm trực tiếp thông qua công nghệ thực tế tăng cường.
+
+Các đóng góp chính của báo cáo bao gồm:
+
+\begin{itemize}
+    \item Đề xuất một mô hình tái tạo mây điểm sử dụng ResNet50 kết hợp Adapter PEFT và bộ giải mã coarse-to-fine nhằm cải thiện chất lượng tái tạo từ ảnh đơn.
+
+    \item Thực hiện nghiên cứu cắt bỏ trên tập dữ liệu Pix3D để phân tích ảnh hưởng của từng thành phần kiến trúc và hệ thống hàm mất mát.
+
+    \item Thiết kế và hiện thực hóa một hệ thống tái tạo 3D production dựa trên Hunyuan3D-2, hỗ trợ sinh hình học, tái tạo kết cấu bề mặt và hiển thị AR trên thiết bị di động.
+
+    \item Chứng minh khả năng kết nối giữa nghiên cứu thuật toán và triển khai ứng dụng thực tế trong một dự án quy mô sinh viên.
+\end{itemize}
+
+\section{Nghiên cứu liên quan}
+
+\subsection{Phương pháp tái tạo 3D từ ảnh đơn}
+
+Các phương pháp tái tạo 3D ban đầu chủ yếu dựa trên biểu diễn voxel. Một trong những công trình tiêu biểu là 3D-R2N2 của Choy và cộng sự \cite{choy}, sử dụng mạng nơ-ron hồi tiếp để tái tạo thể tích từ một hoặc nhiều ảnh đầu vào. Mặc dù đạt kết quả khả quan, các phương pháp voxel thường bị giới hạn bởi độ phân giải do chi phí bộ nhớ tăng theo lũy thừa bậc ba.
+
+Nhằm khắc phục hạn chế này, Fan và cộng sự đề xuất Point Set Generation Network (PSGN) \cite{fan}, trực tiếp sinh ra tập hợp điểm ba chiều thông qua kiến trúc encoder--decoder. Biểu diễn mây điểm giúp giảm đáng kể chi phí tính toán đồng thời duy trì khả năng mô tả hình học linh hoạt.
+
+Ngoài ra, tập dữ liệu Pix3D do Sun và cộng sự giới thiệu \cite{sun} đã trở thành một chuẩn đánh giá phổ biến cho các bài toán tái tạo 3D từ ảnh đơn nhờ cung cấp cặp dữ liệu ảnh thực và mô hình CAD tương ứng.
+
+\subsection{Tinh chỉnh tham số hiệu quả}
+
+Các kỹ thuật Parameter-Efficient Fine-Tuning (PEFT) được đề xuất nhằm thích nghi các mô hình học sâu đã huấn luyện trước với miền dữ liệu mới mà không cần cập nhật toàn bộ trọng số. Trong số đó, Adapter Bottleneck là một phương pháp phổ biến cho phép bổ sung số lượng nhỏ tham số học được vào mạng gốc, từ đó giảm chi phí huấn luyện và hạn chế hiện tượng quên thảm họa (catastrophic forgetting).
+
+Ý tưởng này đặc biệt phù hợp đối với các bài toán có quy mô dữ liệu hạn chế như tái tạo 3D từ ảnh đơn.
+
+\subsection{Mô hình nền tảng cho dữ liệu 3D}
+
+Sự phát triển của các mô hình sinh dựa trên khuếch tán đã thúc đẩy sự xuất hiện của các hệ thống tạo nội dung 3D có chất lượng cao. Hunyuan3D-2 \cite{hunyuan} là một ví dụ tiêu biểu, cho phép sinh mô hình ba chiều có kết cấu bề mặt chân thực từ ảnh đầu vào.
+
+Tuy nhiên, việc triển khai các mô hình nền tảng này trên thiết bị di động gặp nhiều thách thức do yêu cầu tài nguyên tính toán lớn. Điều này đặt ra nhu cầu xây dựng các kiến trúc phân tán nhằm tách biệt quá trình suy luận GPU khỏi giao diện người dùng.
+```
+```latex
+\section{Phương pháp luận}
+
+\subsection{Tổng quan hệ thống}
+
+Hình~\ref{fig:overview} minh họa tổng quan quá trình phát triển của dự án. Hệ thống được xây dựng theo hai giai đoạn kế thừa nhau.
+
+Giai đoạn thứ nhất tập trung vào nghiên cứu cơ sở nhằm làm chủ quy trình tái tạo hình học ba chiều từ ảnh đơn. Một mô hình học sâu dạng encoder--decoder được thiết kế để ánh xạ trực tiếp ảnh đầu vào sang đám mây điểm 3D.
+
+Giai đoạn thứ hai hướng đến triển khai thực tế thông qua việc tích hợp mô hình nền tảng Hunyuan3D-2 vào một kiến trúc phân tán hoàn chỉnh, hỗ trợ sinh mô hình có kết cấu bề mặt và hiển thị trên thiết bị di động.
+
+\subsection{Giai đoạn 1: Mô hình tái tạo mây điểm nội bộ}
+
+Cho ảnh đầu vào $I$, mục tiêu của mô hình là dự đoán đám mây điểm ba chiều:
+
+\begin{equation}
+P = \{p_i\}_{i=1}^{N},
+\qquad p_i \in \mathbb{R}^{3}
+\end{equation}
+
+với $N = 2048$ là số điểm đầu ra.
+
+Kiến trúc tổng thể bao gồm ba thành phần chính:
+
+\begin{enumerate}
+    \item Bộ mã hóa ResNet50;
+    \item Khối tinh chỉnh Adapter PEFT;
+    \item Bộ giải mã mây điểm coarse-to-fine.
+\end{enumerate}
+
+\subsection{Bộ mã hóa ResNet50 kết hợp Adapter}
+
+Mô hình sử dụng ResNet50 đã được huấn luyện trước trên ImageNet làm bộ trích xuất đặc trưng.
+
+Lớp phân loại cuối cùng được loại bỏ, giữ lại vector đặc trưng toàn cục:
+
+\begin{equation}
+z = f_{\text{enc}}(I),
+\qquad
+z \in \mathbb{R}^{2048}
+\end{equation}
+
+Để thích nghi với miền dữ liệu Pix3D mà không cần cập nhật toàn bộ trọng số của bộ mã hóa, chúng tôi tích hợp Adapter Bottleneck theo chiến lược PEFT.
+
+Adapter được biểu diễn như sau:
+
+\begin{equation}
+z' =
+z +
+W_{up}
+\left(
+\sigma
+\left(
+W_{down}
+(
+LN(z)
+)
+\right)
+\right)
+\end{equation}
+
+trong đó:
+
+\begin{itemize}
+    \item $LN(\cdot)$ là phép chuẩn hóa LayerNorm;
+    \item $W_{down}$ giảm số chiều đặc trưng;
+    \item $W_{up}$ khôi phục lại kích thước ban đầu;
+    \item $\sigma(\cdot)$ là hàm kích hoạt GELU.
+\end{itemize}
+
+Chiến lược này giúp giảm số lượng tham số cần cập nhật trong quá trình huấn luyện đồng thời duy trì tri thức học được từ mô hình gốc.
+
+\subsection{Bộ giải mã Coarse-to-Fine}
+
+Thay vì sử dụng một mạng MLP duy nhất để sinh toàn bộ đám mây điểm, chúng tôi áp dụng chiến lược tái tạo theo hai giai đoạn.
+
+\subsubsection{Tầng tái tạo thô}
+
+Từ vector đặc trưng toàn cục $z'$, mô hình dự đoán tập hợp các điểm neo:
+
+\begin{equation}
+P_c =
+\{p_i\}_{i=1}^{N_c},
+\qquad
+p_i \in \mathbb{R}^{3}
+\end{equation}
+
+với $N_c$ là số lượng anchor points.
+
+Các điểm neo đóng vai trò mô tả hình dạng tổng quát của vật thể.
+
+\subsubsection{Tầng tinh chỉnh}
+
+Đối với mỗi điểm neo $p_i$, mô hình sinh thêm các điểm cục bộ nhằm phục hồi chi tiết bề mặt.
+
+Cho tập local seeds:
+
+\begin{equation}
+S =
+\{s_j\}_{j=1}^{K}
+\end{equation}
+
+tọa độ điểm tinh chỉnh được xác định bởi:
+
+\begin{equation}
+p_{ij}
+=
+p_i
++
+\left(
+s_j
++
+MLP_{\text{refine}}
+(
+z' \oplus p_i \oplus s_j
+)
+\right)
+\alpha
+\end{equation}
+
+trong đó:
+
+\begin{itemize}
+    \item $\oplus$ là phép nối vector;
+    \item $\alpha$ là hệ số điều chỉnh độ lệch;
+    \item $MLP_{\text{refine}}$ học cách hiệu chỉnh hình học cục bộ.
+\end{itemize}
+
+Cơ chế này giúp mô hình đồng thời nắm bắt cấu trúc toàn cục và các chi tiết mảnh như chân ghế hoặc tay vịn.
+
+\subsection{Hệ thống hàm mục tiêu}
+
+Tổng hàm mất mát được định nghĩa như sau:
+
+\begin{equation}
+L_{\text{total}}
+=
+L_{WCD}
++
+\lambda_{rep}L_{rep}
++
+\lambda_{uni}L_{uni}
++
+\lambda_{det}L_{det}
+\end{equation}
+
+\subsubsection{Weighted Chamfer Distance}
+
+Hàm Chamfer có trọng số được sử dụng làm thành phần tối ưu chính:
+
+\begin{equation}
+L_{WCD}
+=
+\frac{1}{|X|}
+\sum_{x \in X}
+\min_{y \in Y}
+\|x-y\|_2^2
++
+\frac{w_{gt}}{|Y|}
+\sum_{y \in Y}
+\min_{x \in X}
+\|x-y\|_2^2
+\end{equation}
+
+trong đó:
+
+\begin{itemize}
+    \item $X$ là tập điểm dự đoán;
+    \item $Y$ là tập điểm chuẩn;
+    \item $w_{gt}$ là hệ số ưu tiên độ bao phủ bề mặt.
+\end{itemize}
+
+Trong thực nghiệm, chúng tôi sử dụng:
+
+\begin{equation}
+w_{gt}=1.25
+\end{equation}
+
+\subsubsection{Repulsion Loss}
+
+Để hạn chế hiện tượng tụ tập điểm cục bộ, hàm đẩy điểm được sử dụng:
+
+\begin{equation}
+L_{rep}
+=
+\sum_{i=1}^{N}
+\sum_{j \in K(i)}
+\exp
+\left(
+-
+\frac{\|p_i-p_j\|^2}{h^2}
+\right)
+\end{equation}
+
+với $K(i)$ là tập lân cận của điểm $p_i$.
+
+\subsubsection{Uniformity Loss}
+
+Uniformity Loss được bổ sung nhằm khuyến khích sự phân bố đồng đều của các điểm trên toàn bộ bề mặt vật thể, từ đó giảm các vùng quá dày hoặc quá thưa điểm.
+
+\subsubsection{Detail-aware Loss}
+
+Đối với các vùng có cấu trúc mảnh hoặc độ cong lớn, trọng số mất mát được tăng cường nhằm bảo tồn các chi tiết hình học quan trọng.
+
+\subsection{Chiến lược huấn luyện}
+
+Mô hình được tối ưu bằng AdamW với kỹ thuật Automatic Mixed Precision (AMP).
+
+Trong những epoch đầu tiên, bộ mã hóa ResNet50 được giữ cố định nhằm ổn định quá trình học của bộ giải mã. Từ epoch thứ sáu trở đi, các lớp cuối của bộ mã hóa được giải phóng để tinh chỉnh đồng thời toàn bộ hệ thống.
+
+Chiến lược này giúp tận dụng tri thức học được từ ImageNet trong khi vẫn thích nghi với miền dữ liệu tái tạo 3D.
+
+\section{Giai đoạn 2: Triển khai thực tế với Hunyuan3D-2}
+
+Mặc dù mô hình Stage 1 đạt kết quả khả quan trên tập Pix3D, biểu diễn mây điểm vẫn tồn tại hạn chế về chất lượng lưới tam giác và khả năng tái tạo kết cấu bề mặt.
+
+Do đó, chúng tôi thiết kế lại hệ thống theo mô hình Client--Server--Worker và tích hợp Hunyuan3D-2 như một thành phần suy luận trung tâm.
+
+\subsection{Mobile Client}
+
+Ứng dụng di động được phát triển bằng Expo.
+
+Người dùng có thể:
+
+\begin{itemize}
+    \item chụp ảnh hoặc tải ảnh từ thư viện;
+    \item điều chỉnh vùng quan tâm (bounding box);
+    \item theo dõi trạng thái xử lý;
+    \item xem mô hình thông qua trình xem AR;
+    \item tải xuống tệp GLB.
+\end{itemize}
+
+\subsection{FastAPI Backend}
+
+Backend chịu trách nhiệm:
+
+\begin{itemize}
+    \item tiếp nhận yêu cầu từ thiết bị di động;
+    \item thực hiện tiền xử lý ảnh;
+    \item tách nền bằng \texttt{rembg};
+    \item điều phối tác vụ tới GPU Worker;
+    \item quản lý kết quả sinh ra.
+\end{itemize}
+
+\subsection{GPU Worker}
+
+GPU Worker vận hành mô hình Hunyuan3D-2 để sinh hình học ba chiều.
+
+Bên cạnh đó, hệ thống còn kích hoạt Texturing Pipeline nhằm tái tạo màu sắc và kết cấu bề mặt, tạo ra mô hình GLB có tính chân thực cao phục vụ mục đích trình diễn.
+```
+```latex
+\section{Thực nghiệm và Kết quả}
+
+\subsection{Thiết lập thực nghiệm}
+
+Các thực nghiệm của Stage 1 được thực hiện trên tập dữ liệu Pix3D \cite{sun}. Đây là một trong những bộ dữ liệu phổ biến cho bài toán tái tạo 3D từ ảnh đơn, cung cấp các cặp dữ liệu gồm ảnh RGB thực tế và mô hình CAD tương ứng.
+
+Do giới hạn về tài nguyên tính toán, nghiên cứu tập trung vào hạng mục \textit{chair}, vốn có sự đa dạng lớn về hình học và chứa nhiều chi tiết cấu trúc phức tạp như chân ghế, tay vịn và tựa lưng.
+
+Mỗi mô hình CAD được chuyển đổi thành đám mây điểm chuẩn gồm 2048 điểm. Các ảnh đầu vào được chuẩn hóa về cùng kích thước trước khi đưa vào bộ mã hóa.
+
+Quá trình huấn luyện được thực hiện bằng PyTorch với bộ tối ưu AdamW và kỹ thuật Automatic Mixed Precision (AMP).
+
+\subsection{Nghiên cứu cắt bỏ}
+
+Nghiên cứu cắt bỏ được tiến hành nhằm đánh giá mức độ đóng góp của từng thành phần trong Stage 1.
+
+Mô hình cơ sở (Baseline) bao gồm ResNet50 kết hợp bộ giải mã MLP và sử dụng Chamfer Distance thuần làm hàm mục tiêu. Sau đó, lần lượt bổ sung Adapter PEFT, cơ chế coarse-to-fine và hệ thống hàm mất mát điều hòa.
+
+\begin{table}[htbp]
+\caption{Kết quả nghiên cứu cắt bỏ trên Pix3D (Chair)}
+\label{tab:ablation}
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Phương pháp} &
+\textbf{CD $\downarrow$} &
+\textbf{F-score $\uparrow$} \\
+\midrule
+Baseline (ResNet50 + MLP) &
+0.0195 &
+0.536 \\
+
++ Adapter (PEFT) \&
+Unfreezing &
+0.0112 &
+0.581 \\
+
++ Refine Decoder &
+0.0098 &
+0.621 \\
+
+Full Model (Stage 1) &
+\textbf{0.0094} &
+\textbf{0.633} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Kết quả trong Bảng~\ref{tab:ablation} cho thấy Adapter giúp cải thiện đáng kể khả năng thích nghi miền dữ liệu, làm giảm Chamfer Distance khoảng 42.6\% so với mô hình cơ sở.
+
+Việc bổ sung bộ giải mã coarse-to-fine tiếp tục nâng cao chất lượng tái tạo thông qua khả năng phục hồi chi tiết cục bộ.
+
+Cuối cùng, hệ thống hàm mất mát đa thành phần giúp cải thiện thêm chất lượng đám mây điểm, đạt Chamfer Distance 0.0094 và F-score 0.633.
+
+\subsection{Đánh giá định tính}
+
+Hình~\ref{fig:qualitative} minh họa một số kết quả tái tạo thu được từ Stage 1.
+
+Mô hình có khả năng khôi phục tương đối chính xác cấu trúc tổng thể của vật thể và tái tạo được nhiều chi tiết hình học quan trọng.
+
+Tuy nhiên, đối với các mẫu có hình dạng quá khác biệt so với phân bố huấn luyện, hệ thống vẫn xuất hiện hiện tượng \textit{Mean Shape Collapse}, trong đó mô hình có xu hướng dự đoán hình dạng trung bình của lớp dữ liệu.
+
+Ngoài ra, biểu diễn mây điểm chưa cung cấp thông tin về màu sắc hoặc kết cấu bề mặt, gây hạn chế đối với các ứng dụng trực quan hóa thực tế.
+
+\subsection{Đánh giá hệ thống triển khai thực tế}
+
+Stage 2 không được xây dựng nhằm thay thế nghiên cứu học thuật của Stage 1 mà đóng vai trò chuyển giao kết quả nghiên cứu sang môi trường ứng dụng.
+
+Kiến trúc Client--Server--Worker cho phép tách biệt hoàn toàn quá trình suy luận GPU khỏi thiết bị di động.
+
+Người dùng có thể chụp ảnh, gửi yêu cầu tái tạo, nhận mô hình GLB hoàn chỉnh và trải nghiệm trực tiếp thông qua các trình xem thực tế tăng cường.
+
+Việc tích hợp Hunyuan3D-2 cùng Texturing Pipeline giúp cải thiện đáng kể chất lượng trực quan của mô hình đầu ra, đặc biệt ở khả năng tái tạo bề mặt và màu sắc.
+
+Mặc dù vậy, do sử dụng mô hình nền tảng có sẵn, các đánh giá định lượng của Stage 2 không được xem là đóng góp học thuật chính của nghiên cứu này.
+
+\subsection{Thảo luận}
+
+Các kết quả thực nghiệm cho thấy những cải tiến được đề xuất trong Stage 1 có ảnh hưởng tích cực đến chất lượng tái tạo.
+
+Adapter PEFT giúp tận dụng hiệu quả tri thức từ mô hình pretrained mà không làm gia tăng đáng kể số lượng tham số cần tối ưu.
+
+Bên cạnh đó, chiến lược coarse-to-fine cho phép mô hình học đồng thời cấu trúc toàn cục và các chi tiết cục bộ, góp phần cải thiện độ chính xác hình học.
+
+Tuy nhiên, nghiên cứu vẫn tồn tại một số hạn chế.
+
+Thứ nhất, thực nghiệm mới chỉ được tiến hành trên hạng mục chair của Pix3D.
+
+Thứ hai, biểu diễn mây điểm chưa thể hiện được thông tin về kết cấu bề mặt.
+
+Cuối cùng, hiện tượng Mean Shape Collapse vẫn xuất hiện ở một số trường hợp có hình dạng bất thường.
+
+Những hạn chế này là động lực thúc đẩy việc phát triển Stage 2 như một giải pháp hướng tới ứng dụng thực tế.
+
+\section{Kết luận}
+
+Báo cáo đã trình bày quá trình phát triển một hệ thống tái tạo vật thể ba chiều từ một ảnh duy nhất thông qua hai giai đoạn kế thừa.
+
+Trong giai đoạn nghiên cứu cơ sở, chúng tôi đề xuất một mô hình encoder--decoder sử dụng ResNet50 kết hợp Adapter PEFT và bộ giải mã coarse-to-fine nhằm sinh đám mây điểm 3D trực tiếp từ ảnh đầu vào.
+
+Kết quả thực nghiệm trên Pix3D cho thấy mô hình đạt Chamfer Distance 0.0094 và F-score 0.633, đồng thời nghiên cứu cắt bỏ chứng minh hiệu quả của từng thành phần kiến trúc được đề xuất.
+
+Dựa trên những hiểu biết thu được từ Stage 1, chúng tôi tiếp tục phát triển một hệ thống production hoàn chỉnh dựa trên Hunyuan3D-2, hỗ trợ sinh mô hình có kết cấu bề mặt và hiển thị thực tế tăng cường trên thiết bị di động.
+
+Sự kết hợp giữa nghiên cứu thuật toán và triển khai hệ thống cho thấy tiềm năng chuyển giao các kết quả học thuật vào các ứng dụng thực tế.
+
+Trong tương lai, nhóm dự định mở rộng thực nghiệm sang nhiều hạng mục dữ liệu hơn, khảo sát các biểu diễn hình học khác như implicit representation và tích hợp các kỹ thuật phân đoạn tự động nhằm đơn giản hóa trải nghiệm người dùng.
+
+\section*{Lời cảm ơn}
+
+Nhóm tác giả xin chân thành cảm ơn Giảng viên phụ trách học phần Trí tuệ Nhân tạo tại Trường Đại học Sài Gòn đã định hướng, hỗ trợ và tạo điều kiện thuận lợi trong suốt quá trình thực hiện dự án.
+
+Dự án ban đầu được phát triển như một phần của học phần Python ứng dụng trong Trí tuệ Nhân tạo. Việc mở rộng thành bài báo khoa học đã mang lại cho nhóm cơ hội tiếp cận quy trình nghiên cứu và công bố học thuật trong lĩnh vực AI.
+
+\begin{thebibliography}{99}
+
+\bibitem{choy}
+C. B. Choy, D. Xu, J. Gwak, K. Chen, and S. Savarese,
+``3D-R2N2: A Unified Approach for Single and Multi-view 3D Object Reconstruction,''
+in \textit{Proc. European Conference on Computer Vision (ECCV)},
+2016, pp. 628--644.
+
+\bibitem{fan}
+H. Fan, H. Su, and L. J. Guibas,
+``A Point Set Generation Network for 3D Object Reconstruction from a Single Image,''
+in \textit{Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+2017, pp. 605--613.
+
+\bibitem{sun}
+X. Sun, J. Wu, X. Zhang, Z. Zhang, T. Zhang,
+J. Tenenbaum, and W. Freeman,
+``Pix3D: Dataset and Methods for Single-Image 3D Shape Modeling,''
+in \textit{Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+2018, pp. 2974--2983.
+
+\bibitem{he}
+K. He, X. Zhang, S. Ren, and J. Sun,
+``Deep Residual Learning for Image Recognition,''
+in \textit{Proc. IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+2016, pp. 770--778.
+
+\bibitem{loshchilov}
+I. Loshchilov and F. Hutter,
+``Decoupled Weight Decay Regularization,''
+in \textit{Proc. International Conference on Learning Representations (ICLR)},
+2019.
+
+\bibitem{hunyuan}
+Tencent Hunyuan3D Team,
+``Hunyuan3D-2: Scaling Diffusion Models for High-Fidelity 3D Generation,''
+Technical Report,
+2025.
+
+\end{thebibliography}
+
+\end{document}
+```

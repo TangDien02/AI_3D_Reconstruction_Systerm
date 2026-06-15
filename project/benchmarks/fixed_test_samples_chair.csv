@@ -1,0 +1,11 @@
+benchmark_index,dataset_index,sample_id,category,processed_image,pointcloud,model_uid,reason
+0,0,pix3d_04666,chair,images/chair/3312.png,points/chair/model_-0.563952259432_0.124211065851_3fc39bce5f2e.npy,model_-0.563952259432_0.124211065851_3fc39bce5f2e,main_chair_visual_anchor
+1,1,pix3d_05084,chair,images/chair/3730.png,points/chair/model_d7fe1d9b6112.npy,model_d7fe1d9b6112,fixed_chair_test_unique_model
+2,2,pix3d_04148,chair,images/chair/2794.png,points/chair/model_63cefcfe686c.npy,model_63cefcfe686c,fixed_chair_test_unique_model
+3,3,pix3d_03850,chair,images/chair/2496.png,points/chair/model_514cab8e10ff.npy,model_514cab8e10ff,fixed_chair_test_unique_model
+4,4,pix3d_03154,chair,images/chair/1800.png,points/chair/model_cd868ef93a18.npy,model_cd868ef93a18,fixed_chair_test_unique_model
+5,5,pix3d_03865,chair,images/chair/2511.png,points/chair/model_b8635ffd23ba.npy,model_b8635ffd23ba,fixed_chair_test_unique_model
+6,6,pix3d_01789,chair,images/chair/0435.png,points/chair/model_2bcf80a81530.npy,model_2bcf80a81530,fixed_chair_test_unique_model
+7,7,pix3d_04568,chair,images/chair/3214.png,points/chair/model_870fcddc6ee9.npy,model_870fcddc6ee9,fixed_chair_test_unique_model
+8,10,pix3d_03488,chair,images/chair/2134.png,points/chair/model_a7ef8a5977d7.npy,model_a7ef8a5977d7,fixed_chair_test_unique_model
+9,11,pix3d_02034,chair,images/chair/0680.png,points/chair/model_3952a5f8fec4.npy,model_3952a5f8fec4,fixed_chair_test_unique_model
