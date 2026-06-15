@@ -304,6 +304,15 @@ class ObjectReconstructionNet(nn.Module):
         return ReconstructionForwardOutput(points=points, latent=latent, domain_logits=domain_logits)
 
 
+RESNET_FEATURE_DIMS = {
+    "resnet18": 512,
+    "resnet34": 512,
+    "resnet50": 2048,
+    "resnet101": 2048,
+    "resnet152": 2048,
+}
+
+
 def build_object_reconstruction_model(
     encoder_name: str = "conv",
     pretrained: bool = True,
@@ -311,15 +320,33 @@ def build_object_reconstruction_model(
     num_points: int = 2048,
     freeze_encoder: bool = True,
     use_adapter: bool = False,
+    adapter_bottleneck_dim: int = 64,
     use_domain_discriminator: bool = False,
     normalize_input: bool | None = None,
     decoder_type: str = "mlp",
     coarse_points: int = 512,
     refine_offset_scale: float = 0.08,
+    allow_feature_dim_mismatch: bool = False,
 ) -> ObjectReconstructionNet:
     if encoder_name == "conv":
         encoder = ConvFeatureEncoder(feature_dim=feature_dim)
     elif encoder_name.startswith("resnet"):
+        expected_dim = RESNET_FEATURE_DIMS.get(encoder_name)
+        if (
+            expected_dim is not None
+            and feature_dim != expected_dim
+            and not allow_feature_dim_mismatch
+        ):
+            raise ValueError(
+                f"encoder_name={encoder_name!r} outputs {expected_dim}-d features, but "
+                f"feature_dim={feature_dim} was requested. A mismatched feature_dim adds an "
+                f"extra, randomly-initialized nn.Linear projection inside the encoder. When "
+                f"freeze_encoder=True this projection stays untrained/random and silently "
+                f"corrupts the pretrained features, which skews ablation results. "
+                f"Set feature_dim={expected_dim} (e.g. --feature-dim {expected_dim}), or pass "
+                f"allow_feature_dim_mismatch=True (--allow-feature-dim-mismatch) if this is "
+                f"intentional."
+            )
         encoder = TorchvisionResNetEncoder(
             name=encoder_name,
             pretrained=pretrained,
@@ -334,6 +361,7 @@ def build_object_reconstruction_model(
         feature_dim=feature_dim,
         num_points=num_points,
         use_adapter=use_adapter,
+        adapter_bottleneck_dim=adapter_bottleneck_dim,
         use_domain_discriminator=use_domain_discriminator,
         decoder_type=decoder_type,
         coarse_points=coarse_points,

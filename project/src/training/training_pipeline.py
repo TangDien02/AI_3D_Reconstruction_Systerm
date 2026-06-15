@@ -270,8 +270,34 @@ def parse_args():
     )
     parser.add_argument("--num-points", type=int, default=2048)
     parser.add_argument("--image-size", type=int, default=224)
-    parser.add_argument("--encoder-name", choices=["conv", "resnet18", "resnet50"], default="resnet18")
+    parser.add_argument(
+        "--encoder-name",
+        choices=["conv", "resnet18", "resnet34", "resnet50", "resnet101", "resnet152"],
+        default="resnet18",
+    )
     parser.add_argument("--feature-dim", type=int, default=512)
+    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--use-adapter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Insert an Adapter-Bottleneck (PEFT) block between the encoder and decoder.",
+    )
+    parser.add_argument(
+        "--adapter-bottleneck-dim",
+        type=int,
+        default=64,
+        help="Bottleneck dimension for --use-adapter.",
+    )
+    parser.add_argument(
+        "--allow-feature-dim-mismatch",
+        action="store_true",
+        help=(
+            "Allow --feature-dim to differ from the ResNet backbone's native feature size "
+            "(adds an extra, possibly-frozen projection layer). Off by default."
+        ),
+    )
     parser.add_argument(
         "--decoder-type",
         choices=["mlp", "refine_mlp"],
@@ -290,8 +316,6 @@ def parse_args():
         default=0.08,
         help="Maximum local child-point offset scale for --decoder-type refine_mlp.",
     )
-    parser.add_argument("--pretrained", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -498,6 +522,8 @@ def parse_args():
         args.coarse_points = 512
     if args.refine_offset_scale <= 0:
         args.refine_offset_scale = 0.08
+    if args.adapter_bottleneck_dim <= 0:
+        args.adapter_bottleneck_dim = 64
     if args.decoder_type == "refine_mlp" and args.num_points % args.coarse_points != 0:
         parser.error(
             "--num-points must be divisible by --coarse-points for refine_mlp "
@@ -531,6 +557,8 @@ def build_checkpoint(
         "decoder_type": getattr(args, "decoder_type", "mlp"),
         "coarse_points": getattr(args, "coarse_points", 512),
         "refine_offset_scale": getattr(args, "refine_offset_scale", 0.08),
+        "use_adapter": getattr(args, "use_adapter", False),
+        "adapter_bottleneck_dim": getattr(args, "adapter_bottleneck_dim", 64),
         "pretrained": args.pretrained,
         "freeze_encoder": args.freeze_encoder,
         "encoder_unfrozen": getattr(args, "encoder_unfrozen", None),
@@ -652,7 +680,7 @@ def validate_resume_checkpoint(checkpoint: dict, args, checkpoint_path: Path) ->
                 f"checkpoint={checkpoint['refine_offset_scale']} current={getattr(args, 'refine_offset_scale')}"
             )
 
-    for key in ["encoder_name", "pretrained", "freeze_encoder"]:
+    for key in ["encoder_name", "pretrained", "freeze_encoder", "use_adapter", "adapter_bottleneck_dim"]:
         if key in checkpoint and checkpoint[key] != getattr(args, key):
             mismatches.append(f"{key}: checkpoint={checkpoint[key]} current={getattr(args, key)}")
 
@@ -1075,6 +1103,12 @@ def run_training(args):
         args.pretrained = True
     if not hasattr(args, "freeze_encoder"):
         args.freeze_encoder = True
+    if not hasattr(args, "use_adapter"):
+        args.use_adapter = False
+    if not hasattr(args, "adapter_bottleneck_dim"):
+        args.adapter_bottleneck_dim = 64
+    if not hasattr(args, "allow_feature_dim_mismatch"):
+        args.allow_feature_dim_mismatch = False
     if not hasattr(args, "decoder_type"):
         args.decoder_type = "mlp"
     if not hasattr(args, "coarse_points"):
@@ -1306,18 +1340,23 @@ def run_training(args):
         feature_dim=args.feature_dim,
         num_points=args.num_points,
         freeze_encoder=args.freeze_encoder,
+        use_adapter=args.use_adapter,
+        adapter_bottleneck_dim=args.adapter_bottleneck_dim,
         decoder_type=args.decoder_type,
         coarse_points=args.coarse_points,
         refine_offset_scale=args.refine_offset_scale,
+        allow_feature_dim_mismatch=args.allow_feature_dim_mismatch,
     ).to(device)
     logger.info(
-        "Model ready: resnet_pointcloud encoder=%s decoder=%s coarse_points=%s refine_offset_scale=%s pretrained=%s freeze_encoder=%s feature_dim=%s num_points=%s trainable_params=%s",
+        "Model ready: resnet_pointcloud encoder=%s decoder=%s coarse_points=%s refine_offset_scale=%s pretrained=%s freeze_encoder=%s use_adapter=%s adapter_bottleneck_dim=%s feature_dim=%s num_points=%s trainable_params=%s",
         args.encoder_name,
         args.decoder_type,
         args.coarse_points,
         args.refine_offset_scale,
         args.pretrained,
         args.freeze_encoder,
+        args.use_adapter,
+        args.adapter_bottleneck_dim,
         args.feature_dim,
         args.num_points,
         model.trainable_parameter_count(),
