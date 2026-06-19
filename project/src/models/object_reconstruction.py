@@ -105,15 +105,17 @@ class TorchvisionResNetEncoder(nn.Module):
 class AdapterBlock(nn.Module):
     def __init__(self, feature_dim: int, bottleneck_dim: int = 64):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Linear(feature_dim, bottleneck_dim),
-            nn.GELU(),
-            nn.Linear(bottleneck_dim, feature_dim),
-        )
+        self.norm = nn.LayerNorm(feature_dim)
+        self.down = nn.Linear(feature_dim, bottleneck_dim)
+        self.act = nn.GELU()
+        self.up = nn.Linear(bottleneck_dim, feature_dim)
+        
+        # Zero-init adapter to act as identity at start
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return features + self.net(features)
+        return features + self.up(self.act(self.down(self.norm(features))))
 
 
 class MLPPointCloudDecoder(nn.Module):
