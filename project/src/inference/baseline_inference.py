@@ -18,11 +18,22 @@ from src.utils.pointcloud_io import save_pointcloud_npy, save_pointcloud_ply
 from src.utils.visualization import plot_point_cloud
 
 
+from src.preprocessing.image_processor import pad_to_square
+
 def load_image_tensor(image_path: str | Path, image_size: int) -> torch.Tensor:
-    image = Image.open(image_path).convert("RGB").resize((image_size, image_size))
+    image = Image.open(image_path).convert("RGB")
+    image = pad_to_square(image, fill=0)
+    image = image.resize((image_size, image_size))
     image_np = np.asarray(image).astype(np.float32) / 255.0
     image_np = np.transpose(image_np, (2, 0, 1))
-    return torch.from_numpy(image_np).unsqueeze(0)
+    tensor = torch.from_numpy(image_np)
+    
+    # ImageNet normalize matching training data
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    tensor = (tensor - mean) / std
+    
+    return tensor.unsqueeze(0)
 
 
 def select_device(device_name: str | None = None) -> torch.device:

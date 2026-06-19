@@ -6,8 +6,8 @@ node_modules/
 venv/
 __pycache__/
 *.pyc
-data/raw/
-project/data/raw/
+data/
+project/data/
 .cache/
 
 # Expo
@@ -50,6 +50,7 @@ project/results/training/
 project/results/inference/
 project/results/week2_eda/
 project/external/
+project/Số Liệu Resnet50/
 
 # typescript
 *.tsbuildinfo
