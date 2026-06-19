@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
 from src.data.dataloader import ProcessedPix3DDataset
 from src.inference.baseline_inference import load_baseline_model, model_points, select_device
 from src.metrics.pointcloud_quality import compute_pointcloud_quality_metrics
+from src.utils.pointcloud_io import save_pointcloud_ply
 
 
 def sample_points(points: np.ndarray, max_points: int) -> np.ndarray:
@@ -149,6 +150,8 @@ def compare_sample(args: argparse.Namespace) -> None:
     sample_id = str(dataset.items.iloc[args.index].get("sample_id", f"{args.split}_{args.index:05d}"))
     np.save(output_dir / f"{sample_id}_pred.npy", pred_np)
     np.save(output_dir / f"{sample_id}_gt.npy", gt_np)
+    save_pointcloud_ply(pred_np, output_dir / f"{sample_id}_pred.ply")
+    save_pointcloud_ply(gt_np, output_dir / f"{sample_id}_gt.ply")
 
     figure_path = save_comparison_figure(
         pred_points=pred_np,
@@ -190,6 +193,8 @@ def compare_sample(args: argparse.Namespace) -> None:
     print(f"Saved metrics JSON: {metrics_path}")
     print(f"Saved predicted NPY: {output_dir / f'{sample_id}_pred.npy'}")
     print(f"Saved GT NPY: {output_dir / f'{sample_id}_gt.npy'}")
+    print(f"Saved predicted PLY: {output_dir / f'{sample_id}_pred.ply'}")
+    print(f"Saved GT PLY: {output_dir / f'{sample_id}_gt.ply'}")
 
 
 def parse_args() -> argparse.Namespace:
