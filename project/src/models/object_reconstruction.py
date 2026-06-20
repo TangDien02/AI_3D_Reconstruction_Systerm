@@ -129,7 +129,7 @@ class MLPPointCloudDecoder(nn.Module):
             nn.Linear(hidden_dim // 2, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, num_points * 3),
-            nn.Tanh(),
+            nn.Hardtanh(-1.0, 1.0),
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
@@ -170,7 +170,7 @@ class RefinePointCloudDecoder(nn.Module):
             nn.Linear(hidden_dim // 2, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, coarse_points * 3),
-            nn.Tanh(),
+            nn.Hardtanh(-1.0, 1.0),
         )
         self.feature_projector = nn.Sequential(
             nn.LayerNorm(feature_dim),
@@ -185,7 +185,7 @@ class RefinePointCloudDecoder(nn.Module):
             nn.Linear(hidden_dim // 2, hidden_dim // 4),
             nn.GELU(),
             nn.Linear(hidden_dim // 4, 3),
-            nn.Tanh(),
+            nn.Hardtanh(-1.0, 1.0),
         )
         self.register_buffer("local_seeds", self._build_local_seeds(self.upsample_ratio), persistent=False)
 
@@ -224,7 +224,7 @@ class RefinePointCloudDecoder(nn.Module):
         offsets = self.refine_net(refine_input.reshape(batch_size * self.num_points, -1))
         offsets = offsets.view(batch_size, self.coarse_points, self.upsample_ratio, 3)
         points = coarse_expanded + (seeds + offsets) * self.offset_scale
-        return torch.tanh(points.reshape(batch_size, self.num_points, 3))
+        return torch.clamp(points.reshape(batch_size, self.num_points, 3), -1.0, 1.0)
 
 
 class DomainDiscriminator(nn.Module):
