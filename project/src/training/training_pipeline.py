@@ -41,6 +41,7 @@ from src.metrics.losses import (
     point_repulsion_loss,
     point_uniformity_loss,
     weighted_chamfer_distance,
+    density_aware_chamfer_distance,
 )
 from src.models.object_reconstruction import build_object_reconstruction_model
 
@@ -166,6 +167,8 @@ def train_one_epoch(
     detail_coverage_exponent=1.0,
     uniformity_weight=0.0,
     uniformity_sample_size=512,
+    use_dcd=False,
+    dcd_alpha=1.0,
 ):
     model.train()
     total_loss = 0.0
@@ -177,11 +180,19 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         with autocast_context(device, amp_enabled):
             points_pred = model_points(model, images)
-            loss = weighted_chamfer_distance(
-                points_pred,
-                points_gt,
-                gt_weight=chamfer_gt_weight,
-            )
+            if use_dcd:
+                loss = density_aware_chamfer_distance(
+                    points_pred,
+                    points_gt,
+                    alpha=dcd_alpha,
+                    gt_weight=chamfer_gt_weight,
+                )
+            else:
+                loss = weighted_chamfer_distance(
+                    points_pred,
+                    points_gt,
+                    gt_weight=chamfer_gt_weight,
+                )
             if repulsion_weight > 0:
                 repulsion = point_repulsion_loss(
                     points_pred,
@@ -344,6 +355,18 @@ def parse_args():
         type=float,
         default=1.25,
         help="Weight for the ground-truth-to-prediction Chamfer term. Higher values improve surface coverage.",
+    )
+    parser.add_argument(
+        "--use-dcd",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Density-Aware Chamfer Distance instead of standard Chamfer Distance.",
+    )
+    parser.add_argument(
+        "--dcd-alpha",
+        type=float,
+        default=1.0,
+        help="Density penalty strength for DCD.",
     )
     parser.add_argument(
         "--repulsion-weight",
@@ -1387,7 +1410,9 @@ def run_training(args):
     else:
         logger.info("LR scheduler disabled.")
     logger.info(
-        "Training loss: weighted_chamfer gt_weight=%s repulsion_weight=%s repulsion_k=%s repulsion_radius=%s repulsion_sample_size=%s detail_coverage_weight=%s detail_coverage_k=%s detail_coverage_sample_size=%s detail_coverage_max_weight=%s detail_coverage_exponent=%s uniformity_weight=%s uniformity_sample_size=%s",
+        "Training loss: use_dcd=%s dcd_alpha=%s weighted_chamfer gt_weight=%s repulsion_weight=%s repulsion_k=%s repulsion_radius=%s repulsion_sample_size=%s detail_coverage_weight=%s detail_coverage_k=%s detail_coverage_sample_size=%s detail_coverage_max_weight=%s detail_coverage_exponent=%s uniformity_weight=%s uniformity_sample_size=%s",
+        getattr(args, "use_dcd", False),
+        getattr(args, "dcd_alpha", 1.0),
         args.chamfer_gt_weight,
         args.repulsion_weight,
         args.repulsion_k,
@@ -1531,6 +1556,8 @@ def run_training(args):
                 detail_coverage_exponent=args.detail_coverage_exponent,
                 uniformity_weight=args.uniformity_weight,
                 uniformity_sample_size=args.uniformity_sample_size,
+                use_dcd=getattr(args, "use_dcd", False),
+                dcd_alpha=getattr(args, "dcd_alpha", 1.0),
             )
             val_metrics = evaluate(
                 model,
@@ -1696,6 +1723,8 @@ def run_training(args):
         "detail_coverage_exponent": args.detail_coverage_exponent,
         "uniformity_weight": args.uniformity_weight,
         "uniformity_sample_size": args.uniformity_sample_size,
+        "use_dcd": getattr(args, "use_dcd", False),
+        "dcd_alpha": getattr(args, "dcd_alpha", 1.0),
         "unfreeze_epoch": args.unfreeze_epoch,
         "batch_size": args.batch_size,
         "epochs": args.epochs,

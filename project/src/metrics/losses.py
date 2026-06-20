@@ -33,6 +33,85 @@ def weighted_chamfer_distance(
     return (pred_weight * pred_to_gt + gt_weight * gt_to_pred).mean()
 
 
+def density_aware_chamfer_distance(
+    pred_points: torch.Tensor,
+    gt_points: torch.Tensor,
+    alpha: float = 1.0,
+    gt_weight: float = 1.0,
+    pred_weight: float = 1.0,
+) -> torch.Tensor:
+    """
+    Density-Aware Chamfer Distance (DCD).
+
+    Standard Chamfer Distance allows many predicted points to map to the same
+    GT point (many-to-one), which encourages point clustering. DCD fixes this
+    by down-weighting each predicted point's contribution inversely proportional
+    to how many other predicted points share its nearest GT neighbor.
+
+    Symmetrically, on the GT side, each GT point's contribution is down-weighted
+    by how many GT points share the same nearest predicted point.
+
+    Args:
+        pred_points: [B, N, 3] predicted point cloud
+        gt_points: [B, M, 3] ground-truth point cloud
+        alpha: Density penalty strength. Higher = stronger anti-clustering.
+               alpha=0 reduces to standard Chamfer Distance.
+               alpha=1 is the recommended default.
+        gt_weight: Weight for the GT-to-pred term (coverage).
+        pred_weight: Weight for the pred-to-GT term (precision).
+
+    Reference: "Density-Aware Chamfer Distance as a Comprehensive Metric for
+    Point Cloud Completion" (Wu et al., 2021)
+    """
+    # Pairwise L2 distances: [B, N, M]
+    distances = torch.cdist(pred_points, gt_points, p=2)
+    distances_sq = distances.pow(2)
+
+    # --- Pred-to-GT direction (precision) ---
+    # For each predicted point, find its nearest GT neighbor
+    pred_to_gt_dist, pred_nn_indices = distances_sq.min(dim=2)  # [B, N]
+
+    # Count how many predicted points share each GT neighbor
+    batch_size, num_pred, num_gt = distances.shape
+    # One-hot encode the nearest GT index for each pred point: [B, N, M]
+    pred_nn_onehot = torch.zeros(
+        batch_size, num_pred, num_gt,
+        device=pred_points.device, dtype=pred_points.dtype,
+    )
+    pred_nn_onehot.scatter_(2, pred_nn_indices.unsqueeze(2), 1.0)
+    # Count per GT point how many pred points chose it: [B, M]
+    gt_counts = pred_nn_onehot.sum(dim=1).clamp(min=1.0)
+    # Look up the count for each pred point's chosen GT: [B, N]
+    pred_density = gt_counts.gather(1, pred_nn_indices)
+
+    # Down-weight by density: point in a cluster of 10 gets weight 1/10^alpha
+    pred_weights = (1.0 / pred_density).pow(alpha)
+    # Normalize weights so they sum to N (preserves loss scale)
+    pred_weights = pred_weights * (num_pred / pred_weights.sum(dim=1, keepdim=True).clamp(min=1e-8))
+    pred_to_gt_term = (pred_weights * pred_to_gt_dist).mean(dim=1)
+
+    # --- GT-to-Pred direction (coverage) ---
+    # For each GT point, find its nearest predicted neighbor
+    gt_to_pred_dist, gt_nn_indices = distances_sq.min(dim=1)  # [B, M]
+
+    # Count how many GT points share each pred neighbor
+    gt_nn_onehot = torch.zeros(
+        batch_size, num_gt, num_pred,
+        device=gt_points.device, dtype=gt_points.dtype,
+    )
+    gt_nn_onehot.scatter_(2, gt_nn_indices.unsqueeze(2), 1.0)
+    pred_counts = gt_nn_onehot.sum(dim=1).clamp(min=1.0)  # [B, N]
+    gt_density = pred_counts.gather(1, gt_nn_indices)  # [B, M]
+
+    gt_weights = (1.0 / gt_density).pow(alpha)
+    num_gt_actual = gt_points.shape[1]
+    gt_weights = gt_weights * (num_gt_actual / gt_weights.sum(dim=1, keepdim=True).clamp(min=1e-8))
+    gt_to_pred_term = (gt_weights * gt_to_pred_dist).mean(dim=1)
+
+    return (pred_weight * pred_to_gt_term + gt_weight * gt_to_pred_term).mean()
+
+
+
 def point_repulsion_loss(
     pred_points: torch.Tensor,
     k: int = 8,
